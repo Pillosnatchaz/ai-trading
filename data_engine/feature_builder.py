@@ -14,12 +14,7 @@ class FeatureBuilder:
         last_price = df['close'].iloc[-1]
         
         # 1. SMC Features (Order Block & FVG)
-        # ema_50 = self.math.get_ema(df['bid'], 50).iloc[-1]
-        bullish_obs, bearish_obs = self.math.detect_order_blocks(df)
         fvgs = self.math.detect_fvg(df)
-        
-        nearest_bullish_ob = min([abs(last_price - ob) for ob in bullish_obs]) if bullish_obs else 9999
-        nearest_bearish_ob = min([abs(last_price - ob) for ob in bearish_obs]) if bearish_obs else 9999
         
         nearest_fvg = min([abs(last_price - f['price']) for f in fvgs]) if fvgs else 9999
         
@@ -49,10 +44,7 @@ class FeatureBuilder:
             'rel_h4': (last_bid - df['h4_close'].iloc[-1]) / last_bid,
             
             # SMC
-            'dist_to_bull_ob': nearest_bullish_ob,
-            'dist_to_bear_ob': nearest_bearish_ob,
             'dist_to_fvg': nearest_fvg,
-            'is_near_ob': 1 if (nearest_bullish_ob < 10.0 or nearest_bearish_ob < 10.0) else 0,
             
             # Technicals (Oscillators/Volatility)
             'rsi': rsi,

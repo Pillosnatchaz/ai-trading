@@ -4,6 +4,7 @@ import pandas as pd
 from collections import deque
 from data_engine.feature_builder import FeatureBuilder
 from core.database import DatabaseManager
+from intelligence.ml_lightgbm import LightGBMPredictor
 
 def main_loop(port=5555):
     # 1. Setup Konfigurasi
@@ -16,6 +17,8 @@ def main_loop(port=5555):
     builder = FeatureBuilder()
     db = DatabaseManager()
     
+    ml_model = LightGBMPredictor()
+
     # Variabel untuk melacak candle terakhir agar tidak duplikat
     last_candle_id = None 
     
@@ -51,11 +54,30 @@ def main_loop(port=5555):
             if len(data_buffer) >= 3 and current_candle_id != last_candle_id:
                 df = pd.DataFrame(data_buffer).drop_duplicates()
                 features = builder.build(df)
+
+                # Baca Macro State (LLM)
+                macro_bias = "NEUTRAL"
+                try:
+                    with open("macro_state.json", "r") as f:
+                        macro_bias = json.load(f).get("bias", "NEUTRAL")
+                except FileNotFoundError:
+                    pass
+                
+                # Masukkan ke fitur agar tersimpan di DB
+                features["macro_bias"] = macro_bias
+
+                # ML prediksi peluang (0% - 100%)
+                prob_success = ml_model.predict(features)
                 
                 # Simpan ke DB
-                db.save_snapshot(symbol="XAUUSD", price=data.get('bid'), features=features)
+                db.save_snapshot(
+                    symbol="XAUUSD", 
+                    price=data.get('bid'), 
+                    features=features,
+                    label=None
+                )
                 
-                print(f"[*] Snapshot tersimpan | Candle: {current_candle_id} | Near OB: {features['is_near_ob']}")
+                print(f"[*] AI Win Probability: {prob_success * 100:.2f}% | Dist EMA 50: {features['dist_ema_50']:.4f}")
                 
                 # Update ID candle agar tidak simpan berulang
                 last_candle_id = current_candle_id
