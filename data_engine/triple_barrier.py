@@ -28,7 +28,7 @@ class TripleBarrierLabeler:
             sl_price = current_price - self.sl_dist
             tp_price = current_price + self.tp_dist
         else: # sell
-            sl_price = current_price + self.self.sl_dist
+            sl_price = current_price + self.sl_dist
             tp_price = current_price - self.tp_dist
 
         # Telusuri harga masa depan tick-by-tick (atau bar-by-bar)
