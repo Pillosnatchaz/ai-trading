@@ -70,3 +70,23 @@ When the ML model achieves a >55% win probability on cross-validation:
 
 ---
 *Note: All SMC (Order Block) heuristic algorithms were audited and permanently removed due to zero predictive correlation. Do not re-add them.*
+
+---
+
+## 🔮 Future Ideas (Don't touch until Scalper is profitable)
+* **Swing Trading Mode:** If we want to turn this into a Swing Trader later, we do NOT need a new architecture. Just change the MT4 EA to send `H4` candles instead of `M1`, and change `triple_barrier.py` to `tp_pips=300` and `sl_pips=100`. The ML pipeline will automatically adapt.
+* **Dynamic Lot Sizing (Pure Python):** Scale risk based on ML confidence. e.g., `if prob > 0.85: risk = 0.015`. Then `lot = (balance * risk) / (sl_pips * pip_value)`. Do NOT use an LLM for this math.
+* **Trading Both Ways (Dual Binary Models):** Do not write multi-class ML. Just train two models. 
+  1. Change `direction='buy'` to `direction='sell'` in `run_labeler.py`. Train, save as `lgbm_sell.pkl`.
+  2. Change back to `direction='buy'`. Train, save as `lgbm_buy.pkl`.
+  3. Load both in `main_loop.py`. If `prob_buy > 0.75` and `bias == BULLISH`, Buy. If `prob_sell > 0.75` and `bias == BEARISH`, Sell.
+
+---
+
+## ⚠️ CRITICAL TODO (Before Going Live)
+* **Switch `train_test_split` to TEMPORAL split.** Currently `ml_lightgbm.py` uses `random` split which lets the model peek at nearby data points, inflating accuracy. Before trusting any ML numbers for real money, change to: train on older data, test on newer data (e.g., train on week 1-3, test on week 4). This is non-negotiable for time-series data.
+* **Collect 2000+ snapshots minimum.** Current 1064 is fine for prototyping but test set is too small (213 rows) for reliable precision/recall numbers.
+
+
+ME
+- verifies the WR prediction (not actual wr), and time to reach the win it self (how many minutes)
