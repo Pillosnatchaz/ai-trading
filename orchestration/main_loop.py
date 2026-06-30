@@ -69,6 +69,9 @@ def main_loop(port=5555):
                 # ML prediksi peluang (0% - 100%)
                 prob_success = ml_model.predict(features)
                 
+                # Simpan probabilitas ke features agar tercatat di database (untuk audit nanti)
+                features["live_prob_buy"] = prob_success
+                
                 # Simpan ke DB
                 db.save_snapshot(
                     symbol="XAUUSD", 

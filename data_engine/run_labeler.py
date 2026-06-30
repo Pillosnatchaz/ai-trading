@@ -32,28 +32,37 @@ def label_database(db_filename='ai_data.db'):
     current_labels = df['label'].values
     
     updates = []
+    buy_stats = {1: 0, -1: 0, 0: 0}
+    sell_stats = {1: 0, -1: 0, 0: 0}
     
     print(f"[*] Menganalisa {len(prices)} baris data untuk pelabelan...")
 
     for i in range(len(prices)):
-        # Hanya labeli yang masih kosong (NaN / NULL)
-        if pd.notnull(current_labels[i]):
-            continue
-            
         current_price = prices[i]
-        # Ambil harga-harga yang terjadi SETELAH snapshot ini
         future_prices = prices[i+1 : i+1+labeler.max_bars]
 
-        # Jika kita berada di ujung data dan belum cukup max_bars, kita skip dulu
         if len(future_prices) == 0:
             continue
 
-        # Asumsikan kita melatih model untuk mendeteksi setup BUY
-        # (Anda bisa menyesuaikan jika ingin mengevaluasi sell)
-        label = labeler.get_label(current_price, future_prices, direction='buy')
+        buy_label = labeler.get_label(current_price, future_prices, direction='buy')
+        sell_label = labeler.get_label(current_price, future_prices, direction='sell')
         
-        # Simpan tuple untuk update: (label_baru, id_baris)
-        updates.append((label, int(ids[i])))
+        buy_stats[buy_label] += 1
+        sell_stats[sell_label] += 1
+        
+        if pd.isnull(current_labels[i]):
+            # ponytail: still saving buy_label to db to avoid schema changes (YAGNI)
+            updates.append((buy_label, int(ids[i])))
+            
+    print("\n[+] --- WR Prediction Verification ---")
+    b_total = buy_stats[1] + buy_stats[-1]
+    b_wr = (buy_stats[1] / b_total * 100) if b_total > 0 else 0
+    print(f"BUY  Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Timeout: {buy_stats[0]})")
+    
+    s_total = sell_stats[1] + sell_stats[-1]
+    s_wr = (sell_stats[1] / s_total * 100) if s_total > 0 else 0
+    print(f"SELL Win Rate: {s_wr:.2f}% (Wins: {sell_stats[1]}, Losses: {sell_stats[-1]}, Timeout: {sell_stats[0]})")
+    print("--------------------------------------\n")
 
     if len(updates) > 0:
         cursor = conn.cursor()

@@ -72,4 +72,7 @@ def run_agent():
     print(f"[*] Macro Agent Selesai. Bias: {bias}. Disimpan ke {MACRO_STATE_FILE}")
 
 if __name__ == "__main__":
-    run_agent()
+    while True:
+        run_agent()
+        print("[*] Sleeping for 15 minutes...")
+        time.sleep(900)

@@ -55,7 +55,7 @@ class LightGBMPredictor:
                 continue
                 
         df = pd.DataFrame(data_list)
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob'], errors='ignore')
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy'], errors='ignore')
         return df
 
     def train(self):
@@ -93,8 +93,13 @@ class LightGBMPredictor:
         # Evaluasi
         y_pred = self.model.predict(X_test)
         acc = accuracy_score(y_test, y_pred)
-        print(f"\n[+] Training Selesai! Accuracy di Test Set: {acc * 100:.2f}%")
-        print("Classification Report:")
+        # ponytail: show baseline so we don't fool ourselves with inflated accuracy
+        baseline_acc = (y_test == 0).sum() / len(y_test)
+        print(f"\n[+] Training Selesai!")
+        print(f"    Baseline (always predict loss): {baseline_acc * 100:.2f}%")
+        print(f"    Model Accuracy:                 {acc * 100:.2f}%  (lift: +{(acc - baseline_acc) * 100:.1f}%)")
+        print(f"    Trades taken: {(y_pred == 1).sum()} / {len(y_pred)} ({(y_pred == 1).sum() / len(y_pred) * 100:.1f}%)")
+        print("\nClassification Report:")
         print(classification_report(y_test, y_pred))
 
         # Simpan Model & Nama Fitur
