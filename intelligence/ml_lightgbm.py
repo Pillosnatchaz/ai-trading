@@ -9,11 +9,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 
 class LightGBMPredictor:
-    def __init__(self, db_filename='ai_data.db', model_filename='lgbm_model.pkl'):
+    def __init__(self, db_filename='ai_data.db', direction='buy'):
         """
         Inisialisasi ML Engine.
-        Secara otomatis mencari database dan file model yang tersimpan di root proyek.
+        direction: 'buy' atau 'sell'.
         """
+        self.direction = direction
+        model_filename = f'lgbm_model_{direction}.pkl'
         script_dir = os.path.dirname(os.path.abspath(__file__))
         root_dir = os.path.dirname(script_dir)
         
@@ -33,8 +35,9 @@ class LightGBMPredictor:
             return None
 
         conn = sqlite3.connect(self.db_path)
-        # Ambil hanya data yang sudah memiliki label (selesai di-Triple Barrier)
-        query = "SELECT features_json, label FROM snapshots WHERE label IS NOT NULL"
+        # Ambil hanya data yang sudah memiliki label
+        target_col = 'label' if self.direction == 'buy' else 'sell_label'
+        query = f"SELECT features_json, {target_col} FROM snapshots WHERE {target_col} IS NOT NULL"
         cursor = conn.cursor()
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -55,7 +58,7 @@ class LightGBMPredictor:
                 continue
                 
         df = pd.DataFrame(data_list)
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy'], errors='ignore')
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'session'], errors='ignore')
         return df
 
     def train(self):
@@ -146,11 +149,20 @@ class LightGBMPredictor:
                 model_data = joblib.load(self.model_path)
                 self.model = model_data['model']
                 self.feature_names = model_data['feature_names']
-                print("[*] Model AI (LightGBM) berhasil dimuat dan siap digunakan.")
+                print(f"[*] Model AI (LightGBM - {self.direction.upper()}) berhasil dimuat.")
             except Exception as e:
                 print(f"[!] Gagal memuat model: {e}")
 
 # Fungsi eksekusi manual untuk training
 if __name__ == "__main__":
-    predictor = LightGBMPredictor()
-    predictor.train()
+    print("\n" + "="*30)
+    print(" TRAINING BUY MODEL")
+    print("="*30)
+    predictor_buy = LightGBMPredictor(direction='buy')
+    predictor_buy.train()
+    
+    print("\n" + "="*30)
+    print(" TRAINING SELL MODEL")
+    print("="*30)
+    predictor_sell = LightGBMPredictor(direction='sell')
+    predictor_sell.train()

@@ -90,3 +90,12 @@ When the ML model achieves a >55% win probability on cross-validation:
 
 ME
 - verifies the WR prediction (not actual wr), and time to reach the win it self (how many minutes)
+
+VALID sessions (UTC+7):
+    London open:  14:00–17:00  ✅ HIGH priority
+    NY open:      19:30–22:00  ✅ HIGH priority  
+    London-NY:    19:30–23:00  ✅ HIGHEST (overlap)
+    Asia (gold):  08:00–10:00  ⚠️  LOW, spread wide
+  DEAD ZONES → NO NEW ENTRY:
+    00:00–07:00 WIB (Asia dead)
+    Weekend / pre-market Sunday gap risk
