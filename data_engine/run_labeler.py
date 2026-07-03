@@ -35,11 +35,11 @@ def label_database(db_filename='ai_data.db'):
     current_labels = df['label'].values
     
     updates = []
-    buy_stats = {1: 0, -1: 0, 0: 0}
-    sell_stats = {1: 0, -1: 0, 0: 0}
+    buy_stats = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
+    sell_stats = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
     
-    buy_stats_15 = {1: 0, -1: 0, 0: 0}
-    sell_stats_15 = {1: 0, -1: 0, 0: 0}
+    buy_stats_15 = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
+    sell_stats_15 = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
     
     print(f"[*] Menganalisa {len(prices)} baris data untuk pelabelan...")
 
@@ -66,23 +66,23 @@ def label_database(db_filename='ai_data.db'):
             updates.append((buy_label, sell_label, int(ids[i])))
             
     print("\n[+] --- WR Prediction Verification ---")
-    b_total = buy_stats[1] + buy_stats[-1]
+    b_total = buy_stats[1] + buy_stats[-1] + buy_stats[-2] + buy_stats[-3]
     b_wr = (buy_stats[1] / b_total * 100) if b_total > 0 else 0
-    print(f"BUY  (1:2) Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Timeout: {buy_stats[0]})")
+    print(f"BUY  (1:2) Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Fast SOTW: {buy_stats[-2]}, Slow SOTW: {buy_stats[-3]}, Timeout: {buy_stats[0]})")
     
-    s_total = sell_stats[1] + sell_stats[-1]
+    s_total = sell_stats[1] + sell_stats[-1] + sell_stats[-2] + sell_stats[-3]
     s_wr = (sell_stats[1] / s_total * 100) if s_total > 0 else 0
-    print(f"SELL (1:2) Win Rate: {s_wr:.2f}% (Wins: {sell_stats[1]}, Losses: {sell_stats[-1]}, Timeout: {sell_stats[0]})")
+    print(f"SELL (1:2) Win Rate: {s_wr:.2f}% (Wins: {sell_stats[1]}, Losses: {sell_stats[-1]}, Fast SOTW: {sell_stats[-2]}, Slow SOTW: {sell_stats[-3]}, Timeout: {sell_stats[0]})")
     print("--------------------------------------")
     
     print("\n[+] --- THEORETICAL 1:1.5 (20SL/30TP) ---")
-    b_total_15 = buy_stats_15[1] + buy_stats_15[-1]
+    b_total_15 = buy_stats_15[1] + buy_stats_15[-1] + buy_stats_15[-2] + buy_stats_15[-3]
     b_wr_15 = (buy_stats_15[1] / b_total_15 * 100) if b_total_15 > 0 else 0
-    print(f"BUY  (1:1.5) Win Rate: {b_wr_15:.2f}% (Wins: {buy_stats_15[1]}, Losses: {buy_stats_15[-1]}, Timeout: {buy_stats_15[0]})")
+    print(f"BUY  (1:1.5) Win Rate: {b_wr_15:.2f}% (Wins: {buy_stats_15[1]}, Losses: {buy_stats_15[-1]}, Fast SOTW: {buy_stats_15[-2]}, Slow SOTW: {buy_stats_15[-3]}, Timeout: {buy_stats_15[0]})")
     
-    s_total_15 = sell_stats_15[1] + sell_stats_15[-1]
+    s_total_15 = sell_stats_15[1] + sell_stats_15[-1] + sell_stats_15[-2] + sell_stats_15[-3]
     s_wr_15 = (sell_stats_15[1] / s_total_15 * 100) if s_total_15 > 0 else 0
-    print(f"SELL (1:1.5) Win Rate: {s_wr_15:.2f}% (Wins: {sell_stats_15[1]}, Losses: {sell_stats_15[-1]}, Timeout: {sell_stats_15[0]})")
+    print(f"SELL (1:1.5) Win Rate: {s_wr_15:.2f}% (Wins: {sell_stats_15[1]}, Losses: {sell_stats_15[-1]}, Fast SOTW: {sell_stats_15[-2]}, Slow SOTW: {sell_stats_15[-3]}, Timeout: {sell_stats_15[0]})")
     print("--------------------------------------\n")
 
     if len(updates) > 0:

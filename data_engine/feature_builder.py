@@ -36,12 +36,21 @@ class FeatureBuilder:
         # Menggunakan logika OTE untuk memeriksa apakah harga di area diskon/premium
         ote = self.math.get_ote_levels(df['high'].iloc[-1], df['low'].iloc[-1])  
 
+        ema_50_series = self.math.get_ema(df['bid'], 50)
+        ema_50_current = ema_50_series.iloc[-1]
+        ema_50_past = ema_50_series.iloc[-5] if len(ema_50_series) >= 5 else ema_50_current
+        ema_50_slope = (ema_50_current - ema_50_past) / ema_50_past
+
         # Gabungkan semua fitur
         features = {
             # Trend & Base
-            'dist_ema_50': (last_bid - self.math.get_ema(df['bid'], 50).iloc[-1]) / last_bid,
+            'dist_ema_50': (last_bid - ema_50_current) / last_bid,
+            'ema_50_slope': ema_50_slope,
+            'rel_m5': (last_bid - df['m5_close'].iloc[-1]) / last_bid if pd.notnull(df['m5_close'].iloc[-1]) else 0,
+            'rel_m15': (last_bid - df['m15_close'].iloc[-1]) / last_bid if pd.notnull(df['m15_close'].iloc[-1]) else 0,
             'rel_h1': (last_bid - df['h1_close'].iloc[-1]) / last_bid,
             'rel_h4': (last_bid - df['h4_close'].iloc[-1]) / last_bid,
+            'rel_d1_open': (last_bid - df['d1_open'].iloc[-1]) / last_bid if pd.notnull(df['d1_open'].iloc[-1]) else 0,
             
             # SMC
             'dist_to_fvg': nearest_fvg,

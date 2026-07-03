@@ -37,7 +37,7 @@ class LightGBMPredictor:
         conn = sqlite3.connect(self.db_path)
         # Ambil hanya data yang sudah memiliki label
         target_col = 'label' if self.direction == 'buy' else 'sell_label'
-        query = f"SELECT features_json, {target_col} FROM snapshots WHERE {target_col} IS NOT NULL"
+        query = f"SELECT features_json, {target_col}, timestamp FROM snapshots WHERE {target_col} IS NOT NULL"
         cursor = conn.cursor()
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -48,17 +48,24 @@ class LightGBMPredictor:
             return None
 
         data_list = []
-        for feat_str, label in rows:
+        for feat_str, label, ts in rows:
             try:
                 features = json.loads(feat_str)
                 # Ubah label menjadi Binary: 1 (Hit TP) = 1, selain itu (Hit SL/Timeout) = 0
                 features['target_label'] = 1 if label == 1 else 0
+                features['timestamp'] = ts
                 data_list.append(features)
             except json.JSONDecodeError:
                 continue
                 
         df = pd.DataFrame(data_list)
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'session'], errors='ignore')
+        
+        # Ekstrak Jam (Hour) dari timestamp untuk Regime Filtering
+        if 'timestamp' in df.columns:
+            df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
+            
+        # Drop kolom yang tidak relevan, string, atau timestamp mentah
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp'], errors='ignore')
         return df
 
     def train(self):
@@ -79,8 +86,10 @@ class LightGBMPredictor:
         # Simpan nama fitur agar konsisten saat prediksi live
         self.feature_names = list(X.columns)
 
-        # Split 80% Training, 20% Testing
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Split 80% Training, 20% Testing dengan Embargo Gap (120 baris) untuk mencegah boundary leakage
+        split_idx = int(len(X) * 0.8)
+        X_train, X_test = X.iloc[:split_idx - 120], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
         print("[*] Melatih model LightGBM...")
         self.model = lgb.LGBMClassifier(
@@ -88,7 +97,7 @@ class LightGBMPredictor:
             learning_rate=0.05,
             max_depth=5,
             random_state=42,
-            class_weight='balanced' # Menangani data imbalanced jika Hit SL lebih banyak dari Hit TP
+            # class_weight='balanced' # Menangani data imbalanced jika Hit SL lebih banyak dari Hit TP
         )
         
         self.model.fit(X_train, y_train)
@@ -104,6 +113,28 @@ class LightGBMPredictor:
         print(f"    Trades taken: {(y_pred == 1).sum()} / {len(y_pred)} ({(y_pred == 1).sum() / len(y_pred) * 100:.1f}%)")
         print("\nClassification Report:")
         print(classification_report(y_test, y_pred))
+        
+        # Simpan audit log ke DB
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('''CREATE TABLE IF NOT EXISTS ml_logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            direction TEXT,
+                            accuracy REAL,
+                            baseline REAL,
+                            lift REAL,
+                            trades_taken_pct REAL,
+                            total_samples INTEGER
+                        )''')
+            conn.execute('''INSERT INTO ml_logs (direction, accuracy, baseline, lift, trades_taken_pct, total_samples)
+                            VALUES (?, ?, ?, ?, ?, ?)''', 
+                         (self.direction, acc * 100, baseline_acc * 100, (acc - baseline_acc) * 100, 
+                          (y_pred == 1).sum() / len(y_pred) * 100, len(df)))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[!] Gagal menyimpan audit log ML: {e}")
 
         # Simpan Model & Nama Fitur
         self.save_model()
@@ -119,6 +150,10 @@ class LightGBMPredictor:
 
         # Ubah single dict menjadi DataFrame 1 baris
         df_live = pd.DataFrame([features_dict])
+        
+        # Untuk live data, ambil hour langsung dari waktu server saat ini
+        import datetime
+        df_live['hour'] = datetime.datetime.now().hour
         
         # Pastikan urutan dan jumlah kolom SAMA PERSIS dengan saat training
         # Jika ada fitur baru di live yang tidak ada saat training, buang.

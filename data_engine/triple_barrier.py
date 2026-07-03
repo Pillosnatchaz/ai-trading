@@ -32,15 +32,29 @@ class TripleBarrierLabeler:
             tp_price = current_price - self.tp_dist
 
         # Telusuri harga masa depan tick-by-tick (atau bar-by-bar)
-        for price in future_prices[:self.max_bars]:
+        for i, price in enumerate(future_prices[:self.max_bars]):
             if direction == 'buy':
                 if price <= sl_price:
+                    # Hit SL. Check if it eventually hits TP within remaining time (SOTW)
+                    for p_idx, p in enumerate(future_prices[i+1 : self.max_bars]):
+                        if p >= tp_price:
+                            if (i + 1 + p_idx) <= 15:
+                                return -2 # Fast SOTW (Noise)
+                            else:
+                                return -3 # Slow SOTW (Drift)
                     return -1
                 if price >= tp_price:
                     return 1
 
             elif direction == 'sell':
                 if price >= sl_price:
+                    # Hit SL. Check if it eventually hits TP within remaining time (SOTW)
+                    for p_idx, p in enumerate(future_prices[i+1 : self.max_bars]):
+                        if p <= tp_price:
+                            if (i + 1 + p_idx) <= 15:
+                                return -2 # Fast SOTW (Noise)
+                            else:
+                                return -3 # Slow SOTW (Drift)
                     return -1
                 if price <= tp_price:
                     return 1

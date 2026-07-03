@@ -14,8 +14,8 @@ def fetch_news():
         headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(RSS_URL, headers=headers, timeout=10)
         root = ET.fromstring(resp.content)
-        # Ambil 5 judul berita terakhir
-        titles = [item.find('title').text for item in root.findall('.//item')][:5]
+        # Ambil 5 judul berita terakhir dari standard RSS
+        titles = [item.find('title').text for item in root.findall('.//item') if item.find('title') is not None][:5]
         return "\n".join(titles)
     except Exception as e:
         print(f"[!] Gagal fetch berita: {e}")

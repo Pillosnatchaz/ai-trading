@@ -22,8 +22,8 @@ void OnTick() {
    // Kirim 100 candle history di tick pertama
    if(!history_sent) {
       for(int i = 100; i >= 1; i--) {
-         string hist = StringFormat("{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"time\": %d}",
-            Symbol(), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iOpen(Symbol(), PERIOD_M1, i), iHigh(Symbol(), PERIOD_M1, i), iLow(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iTime(Symbol(), PERIOD_M1, i-1));
+         string hist = StringFormat("{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"time\": %d}",
+            Symbol(), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iOpen(Symbol(), PERIOD_M1, i), iHigh(Symbol(), PERIOD_M1, i), iLow(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), iTime(Symbol(), PERIOD_M1, i-1));
          pub.send(hist);
       }
       history_sent = true;
@@ -42,8 +42,8 @@ void OnTick() {
    
    // Kirim data ke Python melalui ZeroMQ
    string json_data = StringFormat(
-      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"time\": %d}",
-      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), candle_time
+      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"time\": %d}",
+      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), candle_time
    );
    
    pub.send(json_data);

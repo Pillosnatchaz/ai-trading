@@ -59,8 +59,11 @@ def main_loop(port=5557):
                 'high': data.get('high'),
                 'low': data.get('low'),
                 'close': data.get('close'),
+                'm5_close': data.get('m5_close'),
+                'm15_close': data.get('m15_close'),
                 'h1_close': data.get('h1_close'),
-                'h4_close': data.get('h4_close')
+                'h4_close': data.get('h4_close'),
+                'd1_open': data.get('d1_open')
             }
             
             if len(data_buffer) > 0 and data_buffer[-1].get('time') == current_candle_id:
@@ -131,7 +134,8 @@ def main_loop(port=5557):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    if best_prob > 0.5:
+                    # ponytail: Raise threshold to 60% so AI stops spamming low-confidence trades
+                    if best_prob >= 0.57:
                         trade_id = int(time.time())
                         
                         order_msg = {
@@ -139,8 +143,8 @@ def main_loop(port=5557):
                             "trade_id": trade_id,
                             "symbol": "XAUUSD",
                             "lot": 0.01,
-                            "sl_pips": 20,
-                            "tp_pips": 40
+                            "sl_pips": 30,
+                            "tp_pips": 45
                         }
                         pub_socket.send_string(json.dumps(order_msg))
                         

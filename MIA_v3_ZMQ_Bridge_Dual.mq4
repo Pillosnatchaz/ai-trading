@@ -26,13 +26,14 @@ int OnInit() {
 }
 
 bool history_sent = false;
+datetime last_trade_time = 0; // Cooldown tracker
 
 void OnTick() {
    // Kirim 100 candle history di tick pertama
    if(!history_sent) {
       for(int i = 100; i >= 1; i--) {
-         string hist = StringFormat("{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"time\": %d}",
-            Symbol(), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iOpen(Symbol(), PERIOD_M1, i), iHigh(Symbol(), PERIOD_M1, i), iLow(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iTime(Symbol(), PERIOD_M1, i-1));
+         string hist = StringFormat("{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"time\": %d}",
+            Symbol(), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iOpen(Symbol(), PERIOD_M1, i), iHigh(Symbol(), PERIOD_M1, i), iLow(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M1, i), iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), iTime(Symbol(), PERIOD_M1, i-1));
          pub.send(hist);
       }
       history_sent = true;
@@ -48,8 +49,8 @@ void OnTick() {
    
    // Kirim data ke Python melalui ZeroMQ
    string json_data = StringFormat(
-      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"time\": %d}",
-      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), candle_time
+      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"time\": %d}",
+      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), candle_time
    );
    
    pub.send(json_data);
@@ -64,18 +65,26 @@ void OnTick() {
            int id_end = StringFind(rcv, ",", id_start);
            int trade_id = (int)StringToInteger(StringSubstr(rcv, id_start, id_end - id_start));
            
-           int ticket = -1;
-           if(StringFind(rcv, "\"action\": \"BUY\"") >= 0) {
-               double sl_price = Ask - (20 * 10 * Point); 
-               double tp_price = Ask + (40 * 10 * Point);
-               ticket = OrderSend(Symbol(), OP_BUY, 0.01, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
+           if(TimeCurrent() - last_trade_time >= 180) { // 3-minute cooldown
+               int ticket = -1;
+               if(StringFind(rcv, "\"action\": \"BUY\"") >= 0) {
+                   double sl_price = Ask - (30 * 10 * Point); 
+                   double tp_price = Ask + (45 * 10 * Point);
+                   ticket = OrderSend(Symbol(), OP_BUY, 0.01, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
+               } else {
+                   double sl_price = Bid + (30 * 10 * Point); 
+                   double tp_price = Bid - (45 * 10 * Point);
+                   ticket = OrderSend(Symbol(), OP_SELL, 0.01, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
+               }
+               
+               if(ticket >= 0) {
+                   last_trade_time = TimeCurrent();
+               } else {
+                   Print("OrderSend failed with error #", GetLastError());
+               }
            } else {
-               double sl_price = Bid + (20 * 10 * Point); 
-               double tp_price = Bid - (40 * 10 * Point);
-               ticket = OrderSend(Symbol(), OP_SELL, 0.01, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
+               Print("Signal ignored: 3-minute cooldown active.");
            }
-           
-           if(ticket < 0) Print("OrderSend failed with error #", GetLastError());
        }
    }
    
@@ -88,7 +97,8 @@ void OnTick() {
                if(!GlobalVariableCheck(gv_name)) {
                    double exit_price = OrderClosePrice();
                    double profit = OrderProfit();
-                   string close_msg = StringFormat("{\"action\": \"TRADE_CLOSED\", \"trade_id\": %d, \"exit_price\": %f, \"profit\": %f, \"duration\": 0}", t_id, exit_price, profit);
+                   int duration_sec = (int)(OrderCloseTime() - OrderOpenTime());
+                   string close_msg = StringFormat("{\"action\": \"TRADE_CLOSED\", \"trade_id\": %d, \"exit_price\": %f, \"profit\": %f, \"duration\": %d}", t_id, exit_price, profit, duration_sec);
                    pub.send(close_msg);
                    GlobalVariableSet(gv_name, 1);
                }
