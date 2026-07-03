@@ -6,3 +6,4 @@ __pycache__/
 *.md
 *.pkl
 .antigravitycli/
+macro_state.json
