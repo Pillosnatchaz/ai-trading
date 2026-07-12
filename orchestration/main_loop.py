@@ -123,6 +123,12 @@ def main_loop(port=5557):
                 
                 print(f"[*] AI Win Probability -> BUY: {prob_buy * 100:.1f}% | SELL: {prob_sell * 100:.1f}% | Dist EMA: {features['dist_ema_50']:.4f}")
                 
+                # ponytail: EMERGENCY TREND FILTER. Don't fight H1 trend.
+                if features.get('rel_h1', 0) < 0:
+                    prob_buy = 0.0
+                elif features.get('rel_h1', 0) > 0:
+                    prob_sell = 0.0
+
                 # ponytail: send signal to MT5. Fixed 0.01 lot for demo.
                 candle_age_seconds = time.time() - current_candle_id
                 
@@ -166,7 +172,7 @@ def main_loop(port=5557):
             
         except Exception as e:
             print(f"[!] Error Orchestrator: {e}")
-            break
+            continue  # ponytail: don't kill the bot on a single error
 
 if __name__ == "__main__":
     main_loop()

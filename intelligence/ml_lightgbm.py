@@ -64,8 +64,8 @@ class LightGBMPredictor:
         if 'timestamp' in df.columns:
             df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
             
-        # Drop kolom yang tidak relevan, string, atau timestamp mentah
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp'], errors='ignore')
+        # ponytail: drop swing features (rel_h4, rel_d1_open) — they teach mean-reversion logic that kills a 30-pip scalper
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open'], errors='ignore')
         return df
 
     def train(self):
@@ -151,9 +151,9 @@ class LightGBMPredictor:
         # Ubah single dict menjadi DataFrame 1 baris
         df_live = pd.DataFrame([features_dict])
         
-        # Untuk live data, ambil hour langsung dari waktu server saat ini
+        # ponytail: Use UTC to match SQLite CURRENT_TIMESTAMP used in training
         import datetime
-        df_live['hour'] = datetime.datetime.now().hour
+        df_live['hour'] = datetime.datetime.utcnow().hour
         
         # Pastikan urutan dan jumlah kolom SAMA PERSIS dengan saat training
         # Jika ada fitur baru di live yang tidak ada saat training, buang.
