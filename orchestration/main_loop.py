@@ -76,13 +76,35 @@ def main_loop(port=5557):
                 df = pd.DataFrame(data_buffer).drop_duplicates()
                 features = builder.build(df)
 
+                # 4. Filter Old Candles (Historical Buffer)
+                # MT4 sends 100 old candles on startup to build indicators. We should NOT save or trade them.
+                candle_age_seconds = time.time() - current_candle_id
+                if candle_age_seconds > 120:
+                    last_candle_id = current_candle_id
+                    continue
+
                 # Baca Macro State (LLM)
                 macro_bias = "NEUTRAL"
+                news_embargo = False
                 try:
-                    with open("macro_state.json", "r") as f:
-                        macro_bias = json.load(f).get("bias", "NEUTRAL")
-                except FileNotFoundError:
+                    # ponytail: stale data protection — if macro_state.json is older than 60 min, force NEUTRAL
+                    import os
+                    state_file = "macro_state.json"
+                    if os.path.exists(state_file):
+                        file_age_min = (time.time() - os.path.getmtime(state_file)) / 60
+                        with open(state_file, "r") as f:
+                            macro_state = json.load(f)
+                        if file_age_min < 60:
+                            macro_bias = macro_state.get("bias", "NEUTRAL")
+                            news_embargo = macro_state.get("news_embargo", False)
+                        else:
+                            print(f"[!] macro_state.json is {file_age_min:.0f}min old. Forcing NEUTRAL.")
+                except Exception:
                     pass
+                
+                # ponytail: news embargo — skip trading during Red Folder events
+                if news_embargo:
+                    print("[!] RED FOLDER NEWS EMBARGO. Sitting on hands.")
                 
                 # Masukkan ke fitur agar tersimpan di DB
                 features["macro_bias"] = macro_bias
@@ -93,15 +115,11 @@ def main_loop(port=5557):
                 
                 if 14.0 <= time_val < 19.5:
                     current_session = "LONDON"
-                elif 19.5 <= time_val < 23.0:
+                elif 19.5 <= time_val <= 23.0:
                     current_session = "OVERLAP"
-                elif 23.0 <= time_val <= 24.0 or 0.0 <= time_val < 7.0:
-                    current_session = "DEAD_ZONE"
-                elif 8.0 <= time_val < 14.0:
-                    current_session = "ASIA"
                 else:
-                    current_session = "TRANSITION"
-                    
+                    current_session = "ASIAN"
+                
                 features["session"] = current_session
 
                 # ML prediksi peluang (0% - 100%)
@@ -118,7 +136,9 @@ def main_loop(port=5557):
                     price=data.get('bid'), 
                     features=features,
                     label=None,
-                    sell_label=None
+                    sell_label=None,
+                    high=data.get('high'),
+                    low=data.get('low')
                 )
                 
                 print(f"[*] AI Win Probability -> BUY: {prob_buy * 100:.1f}% | SELL: {prob_sell * 100:.1f}% | Dist EMA: {features['dist_ema_50']:.4f}")
@@ -129,19 +149,16 @@ def main_loop(port=5557):
                 elif features.get('rel_h1', 0) > 0:
                     prob_sell = 0.0
 
-                # ponytail: send signal to MT5. Fixed 0.01 lot for demo.
-                candle_age_seconds = time.time() - current_candle_id
-                
                 # Only trade if we are in high priority sessions
                 tradeable_sessions = ["LONDON", "OVERLAP"]
                 
-                if candle_age_seconds < 120 and (current_session in tradeable_sessions):
+                if (current_session in tradeable_sessions) and not news_embargo:
                     # Pick the highest probability
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # ponytail: Raise threshold to 60% so AI stops spamming low-confidence trades
-                    if best_prob >= 0.57:
+                    # ponytail: A 45% probability from an AI trained on a 35% win rate is an incredibly strong signal.
+                    if best_prob >= 0.45:
                         trade_id = int(time.time())
                         
                         order_msg = {

@@ -64,8 +64,12 @@ class LightGBMPredictor:
         if 'timestamp' in df.columns:
             df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
             
+        # ponytail: encode macro_bias strings into numbers for LightGBM
+        if 'macro_bias' in df.columns:
+            df['macro_bias'] = df['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
+            
         # ponytail: drop swing features (rel_h4, rel_d1_open) — they teach mean-reversion logic that kills a 30-pip scalper
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'macro_bias', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open'], errors='ignore')
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open'], errors='ignore')
         return df
 
     def train(self):
@@ -154,6 +158,10 @@ class LightGBMPredictor:
         # ponytail: Use UTC to match SQLite CURRENT_TIMESTAMP used in training
         import datetime
         df_live['hour'] = datetime.datetime.utcnow().hour
+        
+        # ponytail: encode macro_bias string to number (same as training)
+        if 'macro_bias' in df_live.columns:
+            df_live['macro_bias'] = df_live['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
         
         # Pastikan urutan dan jumlah kolom SAMA PERSIS dengan saat training
         # Jika ada fitur baru di live yang tidak ada saat training, buang.

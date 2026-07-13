@@ -17,13 +17,17 @@ def label_database(db_filename='ai_data.db'):
         return
 
     conn = sqlite3.connect(db_path)
-    # Ambil semua data
-    df = pd.read_sql_query("SELECT id, price, label, sell_label FROM snapshots ORDER BY id ASC", conn)
+    # ponytail: also fetch high/low for pessimistic OHLC labeling
+    df = pd.read_sql_query("SELECT id, price, high, low, label, sell_label FROM snapshots ORDER BY id ASC", conn)
 
     if df.empty:
         print("[!] Tidak ada data di database.")
         conn.close()
         return
+
+    # ponytail: check if we have OHLC data
+    has_ohlc = df['high'].notna().any()
+    print(f"[*] OHLC data available: {has_ohlc} ({df['high'].notna().sum()}/{len(df)} rows have high/low)")
 
     # Inisialisasi labeler (misal: 20 pips SL, 40 pips TP, batas 60 candle)
     labeler = TripleBarrierLabeler(sl_pips=20, tp_pips=40, max_bars=60)
@@ -31,6 +35,9 @@ def label_database(db_filename='ai_data.db'):
     labeler_15 = TripleBarrierLabeler(sl_pips=20, tp_pips=30, max_bars=60)
     
     prices = df['price'].values
+    # ponytail: use high/low arrays, filling NaN with price (close) for old rows
+    highs = df['high'].fillna(df['price']).values
+    lows = df['low'].fillna(df['price']).values
     ids = df['id'].values
     current_labels = df['label'].values
     
@@ -46,15 +53,17 @@ def label_database(db_filename='ai_data.db'):
     for i in range(len(prices)):
         current_price = prices[i]
         future_prices = prices[i+1 : i+1+labeler.max_bars]
+        future_highs = highs[i+1 : i+1+labeler.max_bars]
+        future_lows = lows[i+1 : i+1+labeler.max_bars]
 
         if len(future_prices) == 0:
             continue
 
-        buy_label = labeler.get_label(current_price, future_prices, direction='buy')
-        sell_label = labeler.get_label(current_price, future_prices, direction='sell')
+        buy_label = labeler.get_label(current_price, future_prices, direction='buy', future_highs=future_highs, future_lows=future_lows)
+        sell_label = labeler.get_label(current_price, future_prices, direction='sell', future_highs=future_highs, future_lows=future_lows)
         
-        buy_label_15 = labeler_15.get_label(current_price, future_prices, direction='buy')
-        sell_label_15 = labeler_15.get_label(current_price, future_prices, direction='sell')
+        buy_label_15 = labeler_15.get_label(current_price, future_prices, direction='buy', future_highs=future_highs, future_lows=future_lows)
+        sell_label_15 = labeler_15.get_label(current_price, future_prices, direction='sell', future_highs=future_highs, future_lows=future_lows)
         
         buy_stats[buy_label] += 1
         sell_stats[sell_label] += 1
@@ -65,7 +74,7 @@ def label_database(db_filename='ai_data.db'):
         if pd.isnull(current_labels[i]) or pd.isnull(df['sell_label'].values[i]):
             updates.append((buy_label, sell_label, int(ids[i])))
             
-    print("\n[+] --- WR Prediction Verification ---")
+    print("\n[+] --- WR Prediction Verification (OHLC Pessimistic) ---")
     b_total = buy_stats[1] + buy_stats[-1] + buy_stats[-2] + buy_stats[-3]
     b_wr = (buy_stats[1] / b_total * 100) if b_total > 0 else 0
     print(f"BUY  (1:2) Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Fast SOTW: {buy_stats[-2]}, Slow SOTW: {buy_stats[-3]}, Timeout: {buy_stats[0]})")

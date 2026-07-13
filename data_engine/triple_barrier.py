@@ -16,12 +16,18 @@ class TripleBarrierLabeler:
         # Time Barrier: Batas maksimal candle (e.g: 60 candle M1 = 1 jam)
         self.max_bars = max_bars
 
-    def get_label(self, current_price, future_prices, direction="buy"):
+    def get_label(self, current_price, future_prices, direction="buy", future_highs=None, future_lows=None):
         """
         Mengevaluasi jalur harga masa depan untuk menentukan hasil (Label).
+        
+        ponytail: Uses High/Low when available for pessimistic SL/TP checking.
+        If both SL and TP are breached in the same candle, assumes SL hit first (worst case).
+        
         Returns:
              1 : Sentuh Take Profit terlebih dahulu (Trade Sukses)
             -1 : Sentuh Stop Loss terlebih dahulu (Trade Gagal)
+            -2 : Fast SOTW (Hit SL first, then TP within 15 bars)
+            -3 : Slow SOTW (Hit SL first, then TP after 15 bars)
              0 : Sentuh Time Barrier (Sideways / Kadaluarsa)
         """
         if direction == "buy":
@@ -31,32 +37,57 @@ class TripleBarrierLabeler:
             sl_price = current_price + self.sl_dist
             tp_price = current_price - self.tp_dist
 
-        # Telusuri harga masa depan tick-by-tick (atau bar-by-bar)
-        for i, price in enumerate(future_prices[:self.max_bars]):
+        # ponytail: use OHLC when available, fallback to close-only
+        use_ohlc = future_highs is not None and future_lows is not None
+
+        for i in range(min(len(future_prices), self.max_bars)):
+            price = future_prices[i]
+            # ponytail: check intra-candle extremes if available
+            high = future_highs[i] if use_ohlc else price
+            low = future_lows[i] if use_ohlc else price
+
             if direction == 'buy':
-                if price <= sl_price:
-                    # Hit SL. Check if it eventually hits TP within remaining time (SOTW)
-                    for p_idx, p in enumerate(future_prices[i+1 : self.max_bars]):
-                        if p >= tp_price:
-                            if (i + 1 + p_idx) <= 15:
+                hit_sl = low <= sl_price
+                hit_tp = high >= tp_price
+
+                if hit_sl and hit_tp:
+                    # ponytail: pessimistic — assume SL hit first when both breached in same candle
+                    hit_sl = True
+                    hit_tp = False
+
+                if hit_sl:
+                    # Check SOTW
+                    for p_idx in range(i + 1, min(len(future_prices), self.max_bars)):
+                        check_high = future_highs[p_idx] if use_ohlc else future_prices[p_idx]
+                        if check_high >= tp_price:
+                            if (p_idx - i) <= 15:
                                 return -2 # Fast SOTW (Noise)
                             else:
                                 return -3 # Slow SOTW (Drift)
                     return -1
-                if price >= tp_price:
+                if hit_tp:
                     return 1
 
             elif direction == 'sell':
-                if price >= sl_price:
-                    # Hit SL. Check if it eventually hits TP within remaining time (SOTW)
-                    for p_idx, p in enumerate(future_prices[i+1 : self.max_bars]):
-                        if p <= tp_price:
-                            if (i + 1 + p_idx) <= 15:
+                hit_sl = high >= sl_price
+                hit_tp = low <= tp_price
+
+                if hit_sl and hit_tp:
+                    # ponytail: pessimistic — assume SL hit first
+                    hit_sl = True
+                    hit_tp = False
+
+                if hit_sl:
+                    # Check SOTW
+                    for p_idx in range(i + 1, min(len(future_prices), self.max_bars)):
+                        check_low = future_lows[p_idx] if use_ohlc else future_prices[p_idx]
+                        if check_low <= tp_price:
+                            if (p_idx - i) <= 15:
                                 return -2 # Fast SOTW (Noise)
                             else:
                                 return -3 # Slow SOTW (Drift)
                     return -1
-                if price <= tp_price:
+                if hit_tp:
                     return 1
 
         # Jika loop selesai tanpa sentuh SL/TP
@@ -72,7 +103,7 @@ class TripleBarrierLabeler:
 
         for i in range(len(prices)):
             current_price = prices[i]
-            
+
             # Ambil sisa harga di masa depan setelah index saat ini
 
             if len(future_prices) == 0:

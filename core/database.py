@@ -18,17 +18,20 @@ class DatabaseManager:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 symbol TEXT,
                 price REAL,
+                high REAL,
+                low REAL,
                 features_json TEXT,
                 label INTEGER,
                 sell_label INTEGER
             )
         ''')
         
-        # ponytail migration: lazily add sell_label to old databases
-        try:
-            cursor.execute("ALTER TABLE snapshots ADD COLUMN sell_label INTEGER")
-        except sqlite3.OperationalError:
-            pass # column already exists
+        # ponytail migration: lazily add columns to old databases
+        for col in ['sell_label', 'high', 'low']:
+            try:
+                cursor.execute(f"ALTER TABLE snapshots ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError:
+                pass # column already exists
         # ponytail: table to track live trades and link them to ML probabilities
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS live_trades (
@@ -49,17 +52,18 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    def save_snapshot(self, symbol, price, features, label=None, sell_label=None):
+    def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None):
         """Menyimpan fitur ke database."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         features_json = json.dumps(features)
         
+        # ponytail: save high/low for pessimistic triple barrier labeling
         query = """
-        INSERT INTO snapshots (symbol, price, features_json, label, sell_label)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO snapshots (symbol, price, high, low, features_json, label, sell_label)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (symbol, price, features_json, label, sell_label))
+        cursor.execute(query, (symbol, price, high, low, features_json, label, sell_label))
         conn.commit()
         conn.close()
 
