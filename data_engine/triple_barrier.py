@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 class TripleBarrierLabeler:
-    def __init__(self, sl_pips=20, tp_pips=40, max_bars=60):
+    def __init__(self, sl_pips=40, tp_pips=60, max_bars=60):
         """
         Inisialisasi parameter Triple Barrier.
         Untuk instrumen XAUUSD (Gold), 1 pip biasanya bernilai 0.1.

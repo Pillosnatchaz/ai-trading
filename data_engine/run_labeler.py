@@ -29,10 +29,10 @@ def label_database(db_filename='ai_data.db'):
     has_ohlc = df['high'].notna().any()
     print(f"[*] OHLC data available: {has_ohlc} ({df['high'].notna().sum()}/{len(df)} rows have high/low)")
 
-    # Inisialisasi labeler (misal: 20 pips SL, 40 pips TP, batas 60 candle)
-    labeler = TripleBarrierLabeler(sl_pips=20, tp_pips=40, max_bars=60)
-    # ponytail: secondary labeler to test 1:1.5 ratio theoretically
-    labeler_15 = TripleBarrierLabeler(sl_pips=20, tp_pips=30, max_bars=60)
+    # Inisialisasi labeler (Winner from Grid Search: 40 pips SL, 60 pips TP)
+    labeler = TripleBarrierLabeler(sl_pips=40, tp_pips=60, max_bars=60)
+    # ponytail: secondary labeler to test 1:2 ratio theoretically
+    labeler_15 = TripleBarrierLabeler(sl_pips=30, tp_pips=60, max_bars=60)
     
     prices = df['price'].values
     # ponytail: use high/low arrays, filling NaN with price (close) for old rows
@@ -77,21 +77,19 @@ def label_database(db_filename='ai_data.db'):
     print("\n[+] --- WR Prediction Verification (OHLC Pessimistic) ---")
     b_total = buy_stats[1] + buy_stats[-1] + buy_stats[-2] + buy_stats[-3]
     b_wr = (buy_stats[1] / b_total * 100) if b_total > 0 else 0
-    print(f"BUY  (1:2) Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Fast SOTW: {buy_stats[-2]}, Slow SOTW: {buy_stats[-3]}, Timeout: {buy_stats[0]})")
-    
     s_total = sell_stats[1] + sell_stats[-1] + sell_stats[-2] + sell_stats[-3]
     s_wr = (sell_stats[1] / s_total * 100) if s_total > 0 else 0
-    print(f"SELL (1:2) Win Rate: {s_wr:.2f}% (Wins: {sell_stats[1]}, Losses: {sell_stats[-1]}, Fast SOTW: {sell_stats[-2]}, Slow SOTW: {sell_stats[-3]}, Timeout: {sell_stats[0]})")
+    print(f"BUY  (40/60 Fat) Win Rate: {b_wr:.2f}% (Wins: {buy_stats[1]}, Losses: {buy_stats[-1]}, Fast SOTW: {buy_stats[-2]}, Slow SOTW: {buy_stats[-3]}, Timeout: {buy_stats[0]})")
+    print(f"SELL (40/60 Fat) Win Rate: {s_wr:.2f}% (Wins: {sell_stats[1]}, Losses: {sell_stats[-1]}, Fast SOTW: {sell_stats[-2]}, Slow SOTW: {sell_stats[-3]}, Timeout: {sell_stats[0]})")
     print("--------------------------------------")
     
-    print("\n[+] --- THEORETICAL 1:1.5 (20SL/30TP) ---")
+    print("\n[+] --- THEORETICAL 1:2 (30SL/60TP) ---")
     b_total_15 = buy_stats_15[1] + buy_stats_15[-1] + buy_stats_15[-2] + buy_stats_15[-3]
-    b_wr_15 = (buy_stats_15[1] / b_total_15 * 100) if b_total_15 > 0 else 0
-    print(f"BUY  (1:1.5) Win Rate: {b_wr_15:.2f}% (Wins: {buy_stats_15[1]}, Losses: {buy_stats_15[-1]}, Fast SOTW: {buy_stats_15[-2]}, Slow SOTW: {buy_stats_15[-3]}, Timeout: {buy_stats_15[0]})")
-    
+    b15_wr = (buy_stats_15[1] / b_total_15 * 100) if b_total_15 > 0 else 0
     s_total_15 = sell_stats_15[1] + sell_stats_15[-1] + sell_stats_15[-2] + sell_stats_15[-3]
-    s_wr_15 = (sell_stats_15[1] / s_total_15 * 100) if s_total_15 > 0 else 0
-    print(f"SELL (1:1.5) Win Rate: {s_wr_15:.2f}% (Wins: {sell_stats_15[1]}, Losses: {sell_stats_15[-1]}, Fast SOTW: {sell_stats_15[-2]}, Slow SOTW: {sell_stats_15[-3]}, Timeout: {sell_stats_15[0]})")
+    s15_wr = (sell_stats_15[1] / s_total_15 * 100) if s_total_15 > 0 else 0
+    print(f"BUY  (30/60 Wide) Win Rate: {b15_wr:.2f}% (Wins: {buy_stats_15[1]}, Losses: {buy_stats_15[-1]}, Fast SOTW: {buy_stats_15[-2]}, Slow SOTW: {buy_stats_15[-3]}, Timeout: {buy_stats_15[0]})")
+    print(f"SELL (30/60 Wide) Win Rate: {s15_wr:.2f}% (Wins: {sell_stats_15[1]}, Losses: {sell_stats_15[-1]}, Fast SOTW: {sell_stats_15[-2]}, Slow SOTW: {sell_stats_15[-3]}, Timeout: {sell_stats_15[0]})")
     print("--------------------------------------\n")
 
     if len(updates) > 0:

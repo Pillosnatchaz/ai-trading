@@ -96,12 +96,13 @@ class LightGBMPredictor:
         y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
         print("[*] Melatih model LightGBM...")
+        # ponytail: read from config so we can tune from one place
+        from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
         self.model = lgb.LGBMClassifier(
-            n_estimators=100,
-            learning_rate=0.05,
-            max_depth=5,
+            n_estimators=LGBM_ESTIMATORS,
+            learning_rate=LGBM_LEARNING_RATE,
+            max_depth=LGBM_MAX_DEPTH,
             random_state=42,
-            # class_weight='balanced' # Menangani data imbalanced jika Hit SL lebih banyak dari Hit TP
         )
         
         self.model.fit(X_train, y_train)

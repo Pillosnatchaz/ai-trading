@@ -31,9 +31,10 @@ def check_news_embargo():
         resp = requests.get(FF_CALENDAR_URL, headers=headers, timeout=10)
         root = ET.fromstring(resp.content)
         
-        from datetime import datetime, timedelta
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
         import re
-        now = datetime.utcnow()
+        now = datetime.now(ZoneInfo("UTC"))
         
         for event in root.findall('.//event'):
             impact = event.findtext('impact', '').strip()
@@ -48,11 +49,14 @@ def check_news_embargo():
                 continue
                 
             try:
+                # ponytail: FF times are US Eastern — convert to UTC
                 event_dt = datetime.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                # ponytail: embargo window = 30 min before to 15 min after
-                if -30 <= (event_dt - now).total_seconds() / 60 <= 15:
+                event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                mins_diff = (event_dt - now).total_seconds() / 60
+                # ponytail: embargo window = 30 min before to 60 min after
+                if -30 <= mins_diff <= 60:
                     title = event.findtext('title', 'Unknown')
-                    print(f"[!] RED FOLDER: {title} at {event_dt} UTC")
+                    print(f"[!] RED FOLDER: {title} at {event_dt}")
                     return True
             except ValueError:
                 continue

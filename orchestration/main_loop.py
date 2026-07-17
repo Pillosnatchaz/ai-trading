@@ -85,7 +85,6 @@ def main_loop(port=5557):
 
                 # Baca Macro State (LLM)
                 macro_bias = "NEUTRAL"
-                news_embargo = False
                 try:
                     # ponytail: stale data protection — if macro_state.json is older than 60 min, force NEUTRAL
                     import os
@@ -96,11 +95,45 @@ def main_loop(port=5557):
                             macro_state = json.load(f)
                         if file_age_min < 60:
                             macro_bias = macro_state.get("bias", "NEUTRAL")
-                            news_embargo = macro_state.get("news_embargo", False)
                         else:
                             print(f"[!] macro_state.json is {file_age_min:.0f}min old. Forcing NEUTRAL.")
                 except Exception:
                     pass
+                
+                # ponytail: inline embargo check — runs every tick, no blind spots
+                news_embargo = False
+                try:
+                    import requests
+                    import xml.etree.ElementTree as ET
+                    from datetime import datetime as dt
+                    from zoneinfo import ZoneInfo
+                    resp = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.xml", 
+                                       headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+                    root = ET.fromstring(resp.content)
+                    now = dt.now(ZoneInfo("UTC"))
+                    for event in root.findall('.//event'):
+                        impact = event.findtext('impact', '').strip()
+                        if impact not in ('High', 'Holiday'):
+                            continue
+                        date_str = event.findtext('date', '').strip()
+                        time_str = event.findtext('time', '').strip()
+                        if not date_str or not time_str or time_str in ('Tentative', 'All Day'):
+                            continue
+                        try:
+                            # ponytail: FF times are US Eastern — convert to UTC for comparison
+                            event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
+                            event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                            mins_diff = (event_dt - now).total_seconds() / 60
+                            # ponytail: 30 min before to 60 min after
+                            if -30 <= mins_diff <= 60:
+                                title = event.findtext('title', 'Unknown')
+                                print(f"[!] RED FOLDER: {title} ({mins_diff:+.0f}min)")
+                                news_embargo = True
+                                break
+                        except ValueError:
+                            continue
+                except Exception:
+                    pass  # ponytail: if calendar fetch fails, don't block trading
                 
                 # ponytail: news embargo — skip trading during Red Folder events
                 if news_embargo:
@@ -157,7 +190,7 @@ def main_loop(port=5557):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # ponytail: A 45% probability from an AI trained on a 35% win rate is an incredibly strong signal.
+                    # ponytail: veteran 13k-row models restored. Do NOT retrain until Friday night (need 4000+ new OHLC rows).
                     if best_prob >= 0.45:
                         trade_id = int(time.time())
                         
@@ -166,8 +199,8 @@ def main_loop(port=5557):
                             "trade_id": trade_id,
                             "symbol": "XAUUSD",
                             "lot": 0.01,
-                            "sl_pips": 30,
-                            "tp_pips": 45
+                            "sl_pips": 40,
+                            "tp_pips": 60
                         }
                         pub_socket.send_string(json.dumps(order_msg))
                         
