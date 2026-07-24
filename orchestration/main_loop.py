@@ -140,7 +140,7 @@ def main_loop(port=5557):
                 
                 if 14.0 <= time_val < 19.5:
                     current_session = "LONDON"
-                elif 19.5 <= time_val <= 23.0:
+                elif 19.5 <= time_val <= 22.0:  # ponytail: PRD v4.0 — hard cutoff at 22:00 WIB to stop late-night spread bleed
                     current_session = "OVERLAP"
                 else:
                     current_session = "ASIAN"
@@ -184,21 +184,41 @@ def main_loop(port=5557):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # ponytail: veteran 13k-row models restored. Do NOT retrain until Friday night (need 4000+ new OHLC rows).
                     if best_prob >= 0.45:
                         trade_id = int(time.time())
+                        ask = data.get('ask', 0.0)
+                        bid = data.get('bid', 0.0)
+                        atr = features.get('atr', 1.5)
+                        
+                        # Dynamic ATR & Swing SL/TP calculation
+                        atr_sl_pips = round((atr * 1.5) * 10)
+                        if best_dir == "BUY":
+                            swing_low = features.get('swing_low', ask - 4.0)
+                            swing_sl_pips = round(abs(ask - (swing_low - 0.20)) * 10)
+                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                        else:
+                            swing_high = features.get('swing_high', bid + 4.0)
+                            swing_sl_pips = round(abs((swing_high + 0.20) - bid) * 10)
+                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                            
+                        tp_pips = round(sl_pips * 1.5)
+                        
+                        # Dynamic Position Sizing ($10 fixed dollar risk target)
+                        target_risk_usd = 10.0
+                        calculated_lot = round(target_risk_usd / (sl_pips * 10.0), 2)
+                        dynamic_lot = max(0.01, min(0.10, calculated_lot))
                         
                         order_msg = {
                             "action": best_dir,
                             "trade_id": trade_id,
                             "symbol": "XAUUSD",
-                            "lot": 0.01,
-                            "sl_pips": 40,
-                            "tp_pips": 60
+                            "lot": dynamic_lot,
+                            "sl_pips": sl_pips,
+                            "tp_pips": tp_pips
                         }
                         pub_socket.send_string(json.dumps(order_msg))
                         
-                        entry_price = data.get('ask') if best_dir == "BUY" else data.get('bid') # Just for logging
+                        entry_price = ask if best_dir == "BUY" else bid
                         
                         db.log_trade_open(
                             trade_id=trade_id,
@@ -209,7 +229,7 @@ def main_loop(port=5557):
                             probability=best_prob
                         )
                         
-                        print(f"[+] Signal {best_dir} dikirim ke MT5! (TradeID: {trade_id})")
+                        print(f"[+] Signal {best_dir} dikirim ke MT5! (TradeID: {trade_id} | Lot: {dynamic_lot} | SL: {sl_pips}p | TP: {tp_pips}p)")
                 
                 # Update ID candle agar tidak simpan berulang
                 last_candle_id = current_candle_id

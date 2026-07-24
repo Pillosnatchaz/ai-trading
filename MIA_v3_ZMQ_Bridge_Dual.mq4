@@ -43,13 +43,14 @@ void OnTick() {
    double high  = iHigh(Symbol(), PERIOD_M1, 1);
    double low   = iLow(Symbol(), PERIOD_M1, 1);
    double close = iClose(Symbol(), PERIOD_M1, 1);
+   long vol     = iVolume(Symbol(), PERIOD_M1, 1);
    
    long candle_time = iTime(Symbol(), PERIOD_M1, 0);
    
-   // Kirim data ke Python melalui ZeroMQ
+   // Kirim data ke Python melalui ZeroMQ (termasuk M1 tick volume)
    string json_data = StringFormat(
-      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"time\": %d}",
-      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), candle_time
+      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"volume\": %d, \"time\": %d}",
+      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), vol, candle_time
    );
    
    pub.send(json_data);
@@ -64,7 +65,16 @@ void OnTick() {
            int id_end = StringFind(rcv, ",", id_start);
            int trade_id = (int)StringToInteger(StringSubstr(rcv, id_start, id_end - id_start));
            
-           // ponytail: no cooldown — Python controls trade frequency via ML threshold + H1 filter
+           // Parse dynamic lot size
+           double trade_lot = 0.01;
+           int lot_start = StringFind(rcv, "\"lot\": ");
+           if(lot_start >= 0) {
+               lot_start += 7;
+               int lot_end = StringFind(rcv, ",", lot_start);
+               trade_lot = StringToDouble(StringSubstr(rcv, lot_start, lot_end - lot_start));
+           }
+           if(trade_lot <= 0) trade_lot = 0.01;
+           
            // Parse sl_pips and tp_pips from Python signal
            int sl_start = StringFind(rcv, "\"sl_pips\": ") + 11;
            int sl_end = StringFind(rcv, ",", sl_start);
@@ -79,11 +89,11 @@ void OnTick() {
            if(StringFind(rcv, "\"action\": \"BUY\"") >= 0) {
                double sl_price = Ask - (sl_pips * 10 * Point); 
                double tp_price = Ask + (tp_pips * 10 * Point);
-               ticket = OrderSend(Symbol(), OP_BUY, 0.01, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
+               ticket = OrderSend(Symbol(), OP_BUY, trade_lot, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
            } else {
                double sl_price = Bid + (sl_pips * 10 * Point); 
                double tp_price = Bid - (tp_pips * 10 * Point);
-               ticket = OrderSend(Symbol(), OP_SELL, 0.01, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
+               ticket = OrderSend(Symbol(), OP_SELL, trade_lot, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
            }
            
            if(ticket < 0) {

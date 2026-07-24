@@ -37,7 +37,8 @@ class LightGBMPredictor:
         conn = sqlite3.connect(self.db_path)
         # Ambil hanya data yang sudah memiliki label
         target_col = 'label' if self.direction == 'buy' else 'sell_label'
-        query = f"SELECT features_json, {target_col}, timestamp FROM snapshots WHERE {target_col} IS NOT NULL"
+        # ponytail: PRD v4.0 — filter out Fast SOTW (-2, noise stops) from training set
+        query = f"SELECT features_json, {target_col}, timestamp FROM snapshots WHERE {target_col} IS NOT NULL AND {target_col} != -2"
         cursor = conn.cursor()
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -51,7 +52,7 @@ class LightGBMPredictor:
         for feat_str, label, ts in rows:
             try:
                 features = json.loads(feat_str)
-                # Ubah label menjadi Binary: 1 (Hit TP) = 1, selain itu (Hit SL/Timeout) = 0
+                # Ubah label menjadi Binary: 1 (Hit TP) = 1, -1 & 0 & -3 (Clean Loss/Timeout/Slow SOTW) = 0
                 features['target_label'] = 1 if label == 1 else 0
                 features['timestamp'] = ts
                 data_list.append(features)
@@ -68,8 +69,8 @@ class LightGBMPredictor:
         if 'macro_bias' in df.columns:
             df['macro_bias'] = df['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
             
-        # ponytail: drop swing features (rel_h4, rel_d1_open) — they teach mean-reversion logic that kills a 30-pip scalper
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open'], errors='ignore')
+        # ponytail: drop swing features and audit columns
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open', 'dist_to_fvg'], errors='ignore')
         return df
 
     def train(self):
@@ -81,7 +82,7 @@ class LightGBMPredictor:
             print("[!] Data tidak cukup untuk training. Minimal 50 baris berlabel.")
             return
 
-        print(f"[*] Total data siap train: {len(df)} baris.")
+        print(f"[*] Total data siap train: {len(df)} baris (excl. Fast SOTW noise).")
         
         # Pisahkan Fitur (X) dan Target (y)
         X = df.drop(columns=['target_label'])
@@ -95,13 +96,20 @@ class LightGBMPredictor:
         X_train, X_test = X.iloc[:split_idx - 120], X.iloc[split_idx:]
         y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
-        print("[*] Melatih model LightGBM...")
+        print("[*] Melatih model LightGBM (dengan scale_pos_weight = 1.9)...")
         # ponytail: read from config so we can tune from one place
         from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
+        
+        # Calculate pos_weight for class imbalance (~34% win minority)
+        n_neg = (y_train == 0).sum()
+        n_pos = (y_train == 1).sum()
+        pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
+        
         self.model = lgb.LGBMClassifier(
             n_estimators=LGBM_ESTIMATORS,
             learning_rate=LGBM_LEARNING_RATE,
             max_depth=LGBM_MAX_DEPTH,
+            scale_pos_weight=pos_weight,
             random_state=42,
         )
         
