@@ -192,7 +192,8 @@ def main_loop(port=5557):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    if best_prob >= 0.45:
+                    # PRD §6: 1:1.5 R:R makes any calibrated probability >= 40% positive expected value (+EV)
+                    if best_prob >= 0.40:
                         trade_id = int(time.time())
                         ask = data.get('ask', 0.0)
                         bid = data.get('bid', 0.0)
