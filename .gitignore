@@ -3,7 +3,6 @@
 .env.production
 __pycache__/
 *.db
-*.md
 *.pkl
 .antigravitycli/
 macro_state.json

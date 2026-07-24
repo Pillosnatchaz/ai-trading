@@ -26,7 +26,6 @@ int OnInit() {
 }
 
 bool history_sent = false;
-datetime last_trade_time = 0; // Cooldown tracker
 
 void OnTick() {
    // Kirim 100 candle history di tick pertama
@@ -65,25 +64,30 @@ void OnTick() {
            int id_end = StringFind(rcv, ",", id_start);
            int trade_id = (int)StringToInteger(StringSubstr(rcv, id_start, id_end - id_start));
            
-           if(TimeCurrent() - last_trade_time >= 180) { // 3-minute cooldown
-               int ticket = -1;
-               if(StringFind(rcv, "\"action\": \"BUY\"") >= 0) {
-                   double sl_price = Ask - (30 * 10 * Point); 
-                   double tp_price = Ask + (45 * 10 * Point);
-                   ticket = OrderSend(Symbol(), OP_BUY, 0.01, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
-               } else {
-                   double sl_price = Bid + (30 * 10 * Point); 
-                   double tp_price = Bid - (45 * 10 * Point);
-                   ticket = OrderSend(Symbol(), OP_SELL, 0.01, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
-               }
-               
-               if(ticket >= 0) {
-                   last_trade_time = TimeCurrent();
-               } else {
-                   Print("OrderSend failed with error #", GetLastError());
-               }
+           // ponytail: no cooldown — Python controls trade frequency via ML threshold + H1 filter
+           // Parse sl_pips and tp_pips from Python signal
+           int sl_start = StringFind(rcv, "\"sl_pips\": ") + 11;
+           int sl_end = StringFind(rcv, ",", sl_start);
+           int sl_pips = (int)StringToInteger(StringSubstr(rcv, sl_start, sl_end - sl_start));
+           int tp_start = StringFind(rcv, "\"tp_pips\": ") + 11;
+           int tp_end = StringFind(rcv, "}", tp_start);
+           int tp_pips = (int)StringToInteger(StringSubstr(rcv, tp_start, tp_end - tp_start));
+           if(sl_pips <= 0) sl_pips = 40; // ponytail: fallback
+           if(tp_pips <= 0) tp_pips = 60;
+           
+           int ticket = -1;
+           if(StringFind(rcv, "\"action\": \"BUY\"") >= 0) {
+               double sl_price = Ask - (sl_pips * 10 * Point); 
+               double tp_price = Ask + (tp_pips * 10 * Point);
+               ticket = OrderSend(Symbol(), OP_BUY, 0.01, Ask, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Blue);
            } else {
-               Print("Signal ignored: 3-minute cooldown active.");
+               double sl_price = Bid + (sl_pips * 10 * Point); 
+               double tp_price = Bid - (tp_pips * 10 * Point);
+               ticket = OrderSend(Symbol(), OP_SELL, 0.01, Bid, 3, sl_price, tp_price, "AI_Trade", trade_id, 0, Red);
+           }
+           
+           if(ticket < 0) {
+               Print("OrderSend failed with error #", GetLastError());
            }
        }
    }

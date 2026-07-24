@@ -77,28 +77,20 @@ def main_loop(port=5557):
                 features = builder.build(df)
 
                 # 4. Filter Old Candles (Historical Buffer)
-                # MT4 sends 100 old candles on startup to build indicators. We should NOT save or trade them.
+                # ponytail: use old candles to warm up indicators, but don't save to DB or trade
                 candle_age_seconds = time.time() - current_candle_id
                 if candle_age_seconds > 120:
                     last_candle_id = current_candle_id
-                    continue
+                    continue  # features already calculated above, indicators are warm
 
-                # Baca Macro State (LLM)
-                macro_bias = "NEUTRAL"
-                try:
-                    # ponytail: stale data protection — if macro_state.json is older than 60 min, force NEUTRAL
-                    import os
-                    state_file = "macro_state.json"
-                    if os.path.exists(state_file):
-                        file_age_min = (time.time() - os.path.getmtime(state_file)) / 60
-                        with open(state_file, "r") as f:
-                            macro_state = json.load(f)
-                        if file_age_min < 60:
-                            macro_bias = macro_state.get("bias", "NEUTRAL")
-                        else:
-                            print(f"[!] macro_state.json is {file_age_min:.0f}min old. Forcing NEUTRAL.")
-                except Exception:
-                    pass
+                # ponytail: candle-based macro_bias — no LLM, no RSS, no hallucinations
+                ema_slope = features.get('ema_50_slope', 0)
+                if ema_slope > 0.0001:
+                    macro_bias = "BULLISH"
+                elif ema_slope < -0.0001:
+                    macro_bias = "BEARISH"
+                else:
+                    macro_bias = "NEUTRAL"
                 
                 # ponytail: inline embargo check — runs every tick, no blind spots
                 news_embargo = False
@@ -176,10 +168,12 @@ def main_loop(port=5557):
                 
                 print(f"[*] AI Win Probability -> BUY: {prob_buy * 100:.1f}% | SELL: {prob_sell * 100:.1f}% | Dist EMA: {features['dist_ema_50']:.4f}")
                 
-                # ponytail: EMERGENCY TREND FILTER. Don't fight H1 trend.
-                if features.get('rel_h1', 0) < 0:
+                # ponytail: softened H1 trend filter. Only block when trend is strong (>0.15% from H1 close).
+                # Small counter-trend trades near H1 close are allowed (mean-reversion zone).
+                h1_threshold = 0.0015
+                if features.get('rel_h1', 0) < -h1_threshold:
                     prob_buy = 0.0
-                elif features.get('rel_h1', 0) > 0:
+                elif features.get('rel_h1', 0) > h1_threshold:
                     prob_sell = 0.0
 
                 # Only trade if we are in high priority sessions
