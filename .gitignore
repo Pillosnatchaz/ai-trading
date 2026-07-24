@@ -6,3 +6,5 @@ __pycache__/
 *.pkl
 .antigravitycli/
 macro_state.json
+temp/
+scratch/
