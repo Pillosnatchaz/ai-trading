@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import zmq
 import json
 import pandas as pd
@@ -155,6 +159,9 @@ def main_loop(port=5557):
                 features["live_prob_buy"] = prob_buy
                 features["live_prob_sell"] = prob_sell
                 
+                # Get active model version hash for traceability
+                active_hash = f"B:{ml_model_buy.get_model_version_hash()}|S:{ml_model_sell.get_model_version_hash()}"
+
                 # Simpan ke DB
                 db.save_snapshot(
                     symbol="XAUUSD", 
@@ -163,7 +170,8 @@ def main_loop(port=5557):
                     label=None,
                     sell_label=None,
                     high=data.get('high'),
-                    low=data.get('low')
+                    low=data.get('low'),
+                    model_version_hash=active_hash
                 )
                 
                 print(f"[*] AI Win Probability -> BUY: {prob_buy * 100:.1f}% | SELL: {prob_sell * 100:.1f}% | Dist EMA: {features['dist_ema_50']:.4f}")
@@ -196,10 +204,12 @@ def main_loop(port=5557):
                             swing_low = features.get('swing_low', ask - 4.0)
                             swing_sl_pips = round(abs(ask - (swing_low - 0.20)) * 10)
                             sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                            chosen_hash = ml_model_buy.get_model_version_hash()
                         else:
                             swing_high = features.get('swing_high', bid + 4.0)
                             swing_sl_pips = round(abs((swing_high + 0.20) - bid) * 10)
                             sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                            chosen_hash = ml_model_sell.get_model_version_hash()
                             
                         tp_pips = round(sl_pips * 1.5)
                         
@@ -226,10 +236,11 @@ def main_loop(port=5557):
                             entry_price=entry_price,
                             features=features,
                             macro_bias=macro_bias,
-                            probability=best_prob
+                            probability=best_prob,
+                            model_version_hash=chosen_hash
                         )
                         
-                        print(f"[+] Signal {best_dir} dikirim ke MT5! (TradeID: {trade_id} | Lot: {dynamic_lot} | SL: {sl_pips}p | TP: {tp_pips}p)")
+                        print(f"[+] Signal {best_dir} dikirim ke MT5! (TradeID: {trade_id} | Lot: {dynamic_lot} | SL: {sl_pips}p | TP: {tp_pips}p | ModelHash: {chosen_hash})")
                 
                 # Update ID candle agar tidak simpan berulang
                 last_candle_id = current_candle_id

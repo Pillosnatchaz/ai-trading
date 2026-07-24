@@ -27,9 +27,9 @@ class DatabaseManager:
         ''')
         
         # ponytail migration: lazily add columns to old databases
-        for col in ['sell_label', 'high', 'low']:
+        for col in ['sell_label', 'high', 'low', 'model_version_hash']:
             try:
-                cursor.execute(f"ALTER TABLE snapshots ADD COLUMN {col} REAL")
+                cursor.execute(f"ALTER TABLE snapshots ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
                 pass # column already exists
         # ponytail: table to track live trades and link them to ML probabilities
@@ -45,39 +45,47 @@ class DatabaseManager:
                 features_json TEXT,
                 macro_bias TEXT,
                 probability REAL,
+                model_version_hash TEXT,
                 status TEXT,
                 outcome TEXT
             )
         ''')
+        try:
+            cursor.execute("ALTER TABLE live_trades ADD COLUMN model_version_hash TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
         conn.commit()
         conn.close()
 
-    def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None):
+    def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None, model_version_hash=None):
         """Menyimpan fitur ke database."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         features_json = json.dumps(features)
         
-        # ponytail: save high/low for pessimistic triple barrier labeling
         query = """
-        INSERT INTO snapshots (symbol, price, high, low, features_json, label, sell_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO snapshots (symbol, price, high, low, features_json, label, sell_label, model_version_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (symbol, price, high, low, features_json, label, sell_label))
+        cursor.execute(query, (symbol, price, high, low, features_json, label, sell_label, model_version_hash))
         conn.commit()
         conn.close()
 
-    def log_trade_open(self, trade_id, direction, entry_price, features, macro_bias, probability):
-        """Ponytail: Log when a trade is sent to MT5"""
+    def log_trade_open(self, trade_id, direction, entry_price, features, macro_bias, probability, model_version_hash=None):
+        """Ponytail: Log when a trade is sent to MT5 with model version hash"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         feat_str = json.dumps(features)
         
         query = """
         INSERT INTO live_trades 
-        (trade_id, direction, entry_price, features_json, macro_bias, probability, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'OPEN')
+        (trade_id, direction, entry_price, features_json, macro_bias, probability, model_version_hash, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """
+        cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability, model_version_hash))
+        conn.commit()
+        conn.close()
         cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability))
         conn.commit()
         conn.close()

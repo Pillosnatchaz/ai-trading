@@ -96,13 +96,19 @@ class LightGBMPredictor:
         X_train, X_test = X.iloc[:split_idx - 120], X.iloc[split_idx:]
         y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
-        print("[*] Melatih model LightGBM (dengan scale_pos_weight = 1.9)...")
+        # Split training set into sub-train (80%) and calibration (20%)
+        cal_split = int(len(X_train) * 0.8)
+        X_tr, X_cal = X_train.iloc[:cal_split], X_train.iloc[cal_split:]
+        y_tr, y_cal = y_train.iloc[:cal_split], y_train.iloc[cal_split:]
+
+        print("[*] Melatih model LightGBM & Isotonic Probability Calibrator (PRD §7)...")
         # ponytail: read from config so we can tune from one place
         from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
+        from sklearn.calibration import IsotonicRegression
         
         # Calculate pos_weight for class imbalance (~34% win minority)
-        n_neg = (y_train == 0).sum()
-        n_pos = (y_train == 1).sum()
+        n_neg = (y_tr == 0).sum()
+        n_pos = (y_tr == 1).sum()
         pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
         
         self.model = lgb.LGBMClassifier(
@@ -111,19 +117,27 @@ class LightGBMPredictor:
             max_depth=LGBM_MAX_DEPTH,
             scale_pos_weight=pos_weight,
             random_state=42,
+            verbose=-1
         )
         
-        self.model.fit(X_train, y_train)
+        self.model.fit(X_tr, y_tr)
 
-        # Evaluasi
-        y_pred = self.model.predict(X_test)
+        # Fit PRD §7 Post-hoc Isotonic Calibration Layer
+        raw_cal_probs = self.model.predict_proba(X_cal)[:, 1]
+        self.calibrator = IsotonicRegression(out_of_bounds='clip')
+        self.calibrator.fit(raw_cal_probs, y_cal)
+
+        # Evaluasi dengan Isotonic Calibrated probabilities
+        raw_test_probs = self.model.predict_proba(X_test)[:, 1]
+        calib_test_probs = self.calibrator.predict(raw_test_probs)
+        y_pred = (calib_test_probs >= 0.45).astype(int)
+        
         acc = accuracy_score(y_test, y_pred)
-        # ponytail: show baseline so we don't fool ourselves with inflated accuracy
         baseline_acc = (y_test == 0).sum() / len(y_test)
-        print(f"\n[+] Training Selesai!")
+        print(f"\n[+] Training & Calibration Selesai!")
         print(f"    Baseline (always predict loss): {baseline_acc * 100:.2f}%")
         print(f"    Model Accuracy:                 {acc * 100:.2f}%  (lift: +{(acc - baseline_acc) * 100:.1f}%)")
-        print(f"    Trades taken: {(y_pred == 1).sum()} / {len(y_pred)} ({(y_pred == 1).sum() / len(y_pred) * 100:.1f}%)")
+        print(f"    Trades taken (prob >= 0.45):    {(y_pred == 1).sum()} / {len(y_pred)} ({(y_pred == 1).sum() / len(y_pred) * 100:.1f}%)")
         print("\nClassification Report:")
         print(classification_report(y_test, y_pred))
         
@@ -155,44 +169,51 @@ class LightGBMPredictor:
     def predict(self, features_dict):
         """
         Melakukan prediksi dari 1 baris data live.
-        Return: float probabilitas (0.0 sampai 1.0) peluang keberhasilan trade.
+        Return: float probabilitas ISOTONIC CALIBRATED (0.0 sampai 1.0) peluang keberhasilan trade.
         """
         if self.model is None or self.feature_names is None:
-            # print("[!] Model belum dilatih. Mengembalikan probabilitas 0.")
             return 0.0
 
-        # Ubah single dict menjadi DataFrame 1 baris
         df_live = pd.DataFrame([features_dict])
         
-        # ponytail: Use UTC to match SQLite CURRENT_TIMESTAMP used in training
         import datetime
         df_live['hour'] = datetime.datetime.utcnow().hour
         
-        # ponytail: encode macro_bias string to number (same as training)
         if 'macro_bias' in df_live.columns:
             df_live['macro_bias'] = df_live['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
         
-        # Pastikan urutan dan jumlah kolom SAMA PERSIS dengan saat training
-        # Jika ada fitur baru di live yang tidak ada saat training, buang.
-        # Jika ada fitur kurang, isi dengan NaN (LightGBM bisa handle NaN)
         for col in self.feature_names:
             if col not in df_live.columns:
                 df_live[col] = np.nan
                 
         df_live = df_live[self.feature_names]
 
-        # Ambil probabilitas untuk kelas 1 (Trade Sukses)
-        probability = self.model.predict_proba(df_live)[0][1]
-        return probability
+        # Ambil raw probabilitas dari LightGBM
+        raw_prob = self.model.predict_proba(df_live)[0][1]
+        
+        # PRD §7: Pass raw probability through Isotonic Calibrator
+        if hasattr(self, 'calibrator') and self.calibrator is not None:
+            calibrated_prob = float(self.calibrator.predict([raw_prob])[0])
+            return calibrated_prob
+        return raw_prob
 
     def save_model(self):
         """Menyimpan model ke disk."""
         model_data = {
             'model': self.model,
+            'calibrator': getattr(self, 'calibrator', None),
             'feature_names': self.feature_names
         }
         joblib.dump(model_data, self.model_path)
         print(f"[*] Model berhasil disimpan di {self.model_path}")
+
+    def get_model_version_hash(self):
+        """PRD v4.0: Returns MD5 hash of the saved .pkl model artifact for live traceability."""
+        import hashlib
+        if os.path.exists(self.model_path):
+            with open(self.model_path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()[:10]
+        return "UNINITIALIZED"
 
     def load_model(self):
         """Memuat model dari disk jika tersedia."""
@@ -200,8 +221,9 @@ class LightGBMPredictor:
             try:
                 model_data = joblib.load(self.model_path)
                 self.model = model_data['model']
+                self.calibrator = model_data.get('calibrator', None)
                 self.feature_names = model_data['feature_names']
-                print(f"[*] Model AI (LightGBM - {self.direction.upper()}) berhasil dimuat.")
+                print(f"[*] Model AI (LightGBM + Isotonic Calibrated - {self.direction.upper()} | Hash: {self.get_model_version_hash()}) berhasil dimuat.")
             except Exception as e:
                 print(f"[!] Gagal memuat model: {e}")
 
