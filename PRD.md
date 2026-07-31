@@ -138,8 +138,12 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 
 ## 6. Risk & Execution Layer
 
-- **Fixed-fractional position sizing** (0.5–1% equity risk per trade, e.g. $10 risk):
-  - Lot size is calculated dynamically based on Stop Loss distance: $\text{Lot Size} = \frac{\text{Risk Dollars}}{\text{SL Pips} \times \text{Pip Value}}$.
+- **Position Sizing & Risk Modes** (Current baseline: $10 fixed risk, e.g., 0.02–0.03 lot):
+  - Lot size formula: $\text{Lot Size} = \text{max}\left(0.01, \text{min}\left(0.10, \text{round}\left(\frac{\text{Target Risk USD}}{\text{SL Pips} \times 10.0}, 2\right)\right)\right)$.
+  - **Planned Risk Modes (`core/config.py`):**
+    - `MINIMUM`: Hardcoded `0.01` micro-lot for live real-money testing (zero-stress micro risk).
+    - `FIXED_DOLLAR` *(Current)*: Hardcoded `$10.00` fixed dollar risk per trade ($0.04\%$ equity on \$24.8k, $1.0\%$ on \$1k).
+    - `PCT_EQUITY`: Fixed percentage equity risk per trade ($0.5\% - 1.0\%$).
   - Martingale explicitly banned at the architecture level (no lot-scaling-on-loss code path exists anywhere in the system).
 - **Dynamic ATR & Swing-based SL/TP**, replacing static 40/60 pip targets:
   - `SL = max(k_sl × ATR_14, Swing_Boundary_Offset)`, `TP = k_tp × ATR_14` (or Fib expansion off swing leg).
