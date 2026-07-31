@@ -11,6 +11,7 @@ from collections import deque
 from data_engine.feature_builder import FeatureBuilder
 from core.database import DatabaseManager
 from intelligence.ml_lightgbm import LightGBMPredictor
+from core.config import FF_CALENDAR_URL
 
 def main_loop(port=5557):
     # 1. Setup Konfigurasi
@@ -30,10 +31,14 @@ def main_loop(port=5557):
     ml_model_buy = LightGBMPredictor(direction='buy')
     ml_model_sell = LightGBMPredictor(direction='sell')
 
-    # Variabel untuk melacak candle terakhir agar tidak duplikat
+    # Variabel untuk melacak candle & trade & calendar state
     last_candle_id = None 
+    active_trade_id = None
+    last_trade_time = 0.0
+    last_calendar_fetch_time = 0.0
+    cached_red_events = []
     
-    print("[*] Main Orchestrator: Sistem MIA v3.0 Siap (Candle-Based Mode).")
+    print("[*] Main Orchestrator: Sistem MIA v4.0 Siap (Candle-Based Mode).")
     
     while True:
         try:
@@ -41,14 +46,17 @@ def main_loop(port=5557):
             data = json.loads(message)
             
             # ponytail: intercept MT5 trade closing reports
-            if data.get('action') == "TRADE_CLOSED":
+            if data.get('action') == "TRADE_CLOSED" or data.get('type') == "trade_close":
+                closed_id = data.get('trade_id')
                 db.log_trade_close(
-                    trade_id=data.get('trade_id'),
+                    trade_id=closed_id,
                     exit_price=data.get('exit_price'),
                     profit=data.get('profit'),
                     duration=data.get('duration')
                 )
-                print(f"[+] Trade {data.get('trade_id')} CLOSED. Profit: {data.get('profit')}")
+                if active_trade_id == closed_id or active_trade_id is not None:
+                    active_trade_id = None
+                print(f"[+] Trade {closed_id} CLOSED. Profit: {data.get('profit')}")
                 continue
             
             # 2. Ambil ID unik candle (misal: timestamp M1)
@@ -96,42 +104,49 @@ def main_loop(port=5557):
                 else:
                     macro_bias = "NEUTRAL"
                 
-                # ponytail: inline embargo check — runs every tick, no blind spots
+                # ponytail: cached ForexFactory news embargo check — fetch XML at most once per 30 minutes to prevent rate-limit blocks
                 news_embargo = False
                 try:
-                    import requests
-                    import xml.etree.ElementTree as ET
                     from datetime import datetime as dt
                     from zoneinfo import ZoneInfo
-                    resp = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.xml", 
-                                       headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-                    root = ET.fromstring(resp.content)
                     now = dt.now(ZoneInfo("UTC"))
-                    for event in root.findall('.//event'):
-                        impact = event.findtext('impact', '').strip()
-                        if impact not in ('High', 'Holiday'):
-                            continue
-                        date_str = event.findtext('date', '').strip()
-                        time_str = event.findtext('time', '').strip()
-                        if not date_str or not time_str or time_str in ('Tentative', 'All Day'):
-                            continue
-                        try:
-                            # ponytail: FF times are US Eastern — convert to UTC for comparison
-                            event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                            event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
-                            mins_diff = (event_dt - now).total_seconds() / 60
-                            # ponytail: 30 min before to 60 min after
-                            if -30 <= mins_diff <= 60:
-                                title = event.findtext('title', 'Unknown')
-                                print(f"[!] RED FOLDER: {title} ({mins_diff:+.0f}min)")
-                                news_embargo = True
-                                break
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass  # ponytail: if calendar fetch fails, don't block trading
-                
-                # ponytail: news embargo — skip trading during Red Folder events
+
+                    if time.time() - last_calendar_fetch_time >= 1800:
+                        import requests
+                        import xml.etree.ElementTree as ET
+                        resp = requests.get(FF_CALENDAR_URL, 
+                                           headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+                        if resp.status_code == 200:
+                            root = ET.fromstring(resp.content)
+                            new_events = []
+                            for event in root.findall('.//event'):
+                                impact = event.findtext('impact', '').strip()
+                                if impact not in ('High', 'Holiday'):
+                                    continue
+                                date_str = event.findtext('date', '').strip()
+                                time_str = event.findtext('time', '').strip()
+                                if not date_str or not time_str or time_str in ('Tentative', 'All Day'):
+                                    continue
+                                try:
+                                    event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
+                                    event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                                    title = event.findtext('title', 'Unknown')
+                                    new_events.append((event_dt, title))
+                                except ValueError:
+                                    continue
+                            cached_red_events = new_events
+                            last_calendar_fetch_time = time.time()
+                            print(f"[*] ForexFactory Calendar updated cleanly: {len(cached_red_events)} Red Folder events cached.")
+
+                    for event_dt, title in cached_red_events:
+                        mins_diff = (event_dt - now).total_seconds() / 60.0
+                        if -30 <= mins_diff <= 60:
+                            print(f"[!] RED FOLDER EMBARGO: {title} ({mins_diff:+.0f}min)")
+                            news_embargo = True
+                            break
+                except Exception as e:
+                    pass  # ponytail: if calendar fetch fails or rate limits, fallback to cached schedule without crashing
+
                 if news_embargo:
                     print("[!] RED FOLDER NEWS EMBARGO. Sitting on hands.")
                 
@@ -192,9 +207,13 @@ def main_loop(port=5557):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # PRD §6: 1:1.5 R:R makes any calibrated probability >= 40% positive expected value (+EV)
-                    if best_prob >= 0.40:
+                    # ponytail: prevent stacking duplicate trades — only 1 active trade allowed, with 3-min (180s) cooldown
+                    time_since_trade = time.time() - last_trade_time
+                    if best_prob >= 0.40 and active_trade_id is None and time_since_trade >= 180:
                         trade_id = int(time.time())
+                        active_trade_id = trade_id
+                        last_trade_time = time.time()
+                        
                         ask = data.get('ask', 0.0)
                         bid = data.get('bid', 0.0)
                         atr = features.get('atr', 1.5)

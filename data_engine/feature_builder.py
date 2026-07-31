@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from .indicator_math import IndicatorMath
 
 class FeatureBuilder:
@@ -36,7 +37,7 @@ class FeatureBuilder:
             nearest_fvg_price = min([f['price'] for f in fvgs], key=lambda p: abs(last_price - p))
             fvg_dist_atr = (last_price - nearest_fvg_price) / atr
         else:
-            fvg_dist_atr = None
+            fvg_dist_atr = np.nan
 
         ema_50_series = self.math.get_ema(df['bid'], 50)
         ema_50_current = ema_50_series.iloc[-1]

@@ -34,11 +34,19 @@ class LightGBMPredictor:
             print(f"[!] Database tidak ditemukan di {self.db_path}")
             return None
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         # Ambil hanya data yang sudah memiliki label
         target_col = 'label' if self.direction == 'buy' else 'sell_label'
-        # ponytail: PRD v4.0 — filter out Fast SOTW (-2, noise stops) from training set
-        query = f"SELECT features_json, {target_col}, timestamp FROM snapshots WHERE {target_col} IS NOT NULL AND {target_col} != -2"
+        # ponytail: deduplicate snapshots by minute to ensure 1 clean row per M1 candle close and prevent data leakage
+        query = f"""
+        SELECT features_json, {target_col}, timestamp 
+        FROM (
+            SELECT features_json, {target_col}, timestamp, id,
+                   ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp) ORDER BY id DESC) as rn
+            FROM snapshots
+            WHERE {target_col} IS NOT NULL AND {target_col} != -2
+        ) WHERE rn = 1 ORDER BY id ASC
+        """
         cursor = conn.cursor()
         cursor.execute(query)
         rows = cursor.fetchall()
@@ -65,9 +73,11 @@ class LightGBMPredictor:
         if 'timestamp' in df.columns:
             df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
             
-        # ponytail: encode macro_bias strings into numbers for LightGBM
+        # ponytail: encode macro_bias & volatility_regime strings into numbers for LightGBM
         if 'macro_bias' in df.columns:
             df['macro_bias'] = df['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
+        if 'volatility_regime' in df.columns:
+            df['volatility_regime'] = df['volatility_regime'].map({'LOW': 0, 'NORMAL': 1, 'HIGH': 2}).fillna(1)
             
         # ponytail: drop swing features and audit columns
         df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open', 'dist_to_fvg'], errors='ignore')
@@ -143,7 +153,7 @@ class LightGBMPredictor:
         
         # Simpan audit log ke DB
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
             conn.execute('''CREATE TABLE IF NOT EXISTS ml_logs (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -181,12 +191,14 @@ class LightGBMPredictor:
         
         if 'macro_bias' in df_live.columns:
             df_live['macro_bias'] = df_live['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1}).fillna(0)
+        if 'volatility_regime' in df_live.columns:
+            df_live['volatility_regime'] = df_live['volatility_regime'].map({'LOW': 0, 'NORMAL': 1, 'HIGH': 2}).fillna(1)
         
         for col in self.feature_names:
             if col not in df_live.columns:
                 df_live[col] = np.nan
                 
-        df_live = df_live[self.feature_names]
+        df_live = df_live[self.feature_names].astype(float)
 
         # Ambil raw probabilitas dari LightGBM
         raw_prob = self.model.predict_proba(df_live)[0][1]

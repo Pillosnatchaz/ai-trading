@@ -8,9 +8,13 @@ class DatabaseManager:
         self.db_path = os.path.join(os.path.dirname(script_dir), db_filename)
         self.create_tables()
 
+    def _get_conn(self):
+        """Helper to get SQLite connection with busy timeout to prevent database locks."""
+        return sqlite3.connect(self.db_path, timeout=30.0)
+
     def create_tables(self):
         """Memastikan tabel snapshots selalu ada."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS snapshots (
@@ -60,7 +64,7 @@ class DatabaseManager:
 
     def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None, model_version_hash=None):
         """Menyimpan fitur ke database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         features_json = json.dumps(features)
         
@@ -74,25 +78,22 @@ class DatabaseManager:
 
     def log_trade_open(self, trade_id, direction, entry_price, features, macro_bias, probability, model_version_hash=None):
         """Ponytail: Log when a trade is sent to MT5 with model version hash"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         feat_str = json.dumps(features)
         
         query = """
-        INSERT INTO live_trades 
+        INSERT OR IGNORE INTO live_trades 
         (trade_id, direction, entry_price, features_json, macro_bias, probability, model_version_hash, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """
         cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability, model_version_hash))
         conn.commit()
         conn.close()
-        cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability))
-        conn.commit()
-        conn.close()
 
     def log_trade_close(self, trade_id, exit_price, profit, duration):
         """Ponytail: Update trade when MT5 tells us it closed"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         outcome = "WIN" if profit > 0 else "LOSS"
         

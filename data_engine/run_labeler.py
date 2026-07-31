@@ -16,9 +16,17 @@ def label_database(db_filename='ai_data.db'):
         print(f"[!] Database tidak ditemukan: {db_path}")
         return
 
+    # ponytail: deduplicate snapshots by minute (ROW_NUMBER() OVER PARTITION BY minute) to ensure 1 clean row per M1 candle close
+    dedup_query = """
+    SELECT id, price, high, low, label, sell_label 
+    FROM (
+        SELECT id, price, high, low, label, sell_label, timestamp,
+               ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp) ORDER BY id DESC) as rn
+        FROM snapshots
+    ) WHERE rn = 1 ORDER BY id ASC
+    """
     conn = sqlite3.connect(db_path)
-    # ponytail: also fetch high/low for pessimistic OHLC labeling
-    df = pd.read_sql_query("SELECT id, price, high, low, label, sell_label FROM snapshots ORDER BY id ASC", conn)
+    df = pd.read_sql_query(dedup_query, conn)
 
     if df.empty:
         print("[!] Tidak ada data di database.")
