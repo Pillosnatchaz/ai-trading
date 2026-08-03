@@ -118,10 +118,10 @@ class LightGBMPredictor:
         # ponytail: keep session tags for per-session calibrator fitting, then drop from features
         cal_sessions = df.iloc[X_cal.index]['_session'] if '_session' in df.columns else pd.Series(['OTHER'] * len(X_cal))
 
-        print("[*] Melatih model LightGBM & Isotonic Probability Calibrator (PRD §7)...")
+        print("[*] Melatih model LightGBM & Platt Probability Calibrator (PRD §7)...")
         # ponytail: read from config so we can tune from one place
         from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
-        from sklearn.isotonic import IsotonicRegression
+        from sklearn.linear_model import LogisticRegression
         
         # Calculate pos_weight for class imbalance (~34% win minority)
         n_neg = (y_tr == 0).sum()
@@ -148,27 +148,27 @@ class LightGBMPredictor:
         
         self.model.fit(X_tr, y_tr)
 
-        # Fit PRD §7 Global Isotonic Calibration Layer
+        # Fit PRD §7 Global Platt Calibration Layer (LogisticRegression)
+        # ponytail: Platt scaling replaces Isotonic to prevent flat step-function collapse on clustered raw probs
         raw_cal_probs = self.model.predict_proba(X_cal)[:, 1]
-        self.calibrator = IsotonicRegression(out_of_bounds='clip')
-        self.calibrator.fit(raw_cal_probs, y_cal)
+        self.calibrator = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
+        self.calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal)
 
-        # ponytail: fit per-session isotonic calibrators (middle-ground architecture)
-        # ceiling: upgrade to dedicated per-session LightGBM trees at 50k+ rows
+        # ponytail: fit per-session Platt calibrators with minimum cell threshold (n >= 250)
         self.session_calibrators = {}
         for sess in ['LONDON', 'OVERLAP', 'ASIAN']:
             mask = cal_sessions.values == sess
-            if mask.sum() >= 20:  # ponytail: need minimum 20 samples for isotonic fit
-                sess_cal = IsotonicRegression(out_of_bounds='clip')
-                sess_cal.fit(raw_cal_probs[mask], y_cal.values[mask])
+            if mask.sum() >= 250:
+                sess_cal = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
+                sess_cal.fit(raw_cal_probs[mask].reshape(-1, 1), y_cal.values[mask])
                 self.session_calibrators[sess] = sess_cal
-                print(f"    [+] Per-session calibrator fitted: {sess} (n={mask.sum()})")
+                print(f"    [+] Per-session Platt calibrator fitted: {sess} (n={mask.sum()})")
             else:
-                print(f"    [!] {sess} calibrator skipped (n={mask.sum()}, need 20+). Using global.")
+                print(f"    [!] {sess} calibrator skipped (n={mask.sum()}, need 250+). Using global fallback.")
 
-        # Evaluasi dengan Isotonic Calibrated probabilities
+        # Evaluasi dengan Platt Calibrated probabilities
         raw_test_probs = self.model.predict_proba(X_test)[:, 1]
-        calib_test_probs = self.calibrator.predict(raw_test_probs)
+        calib_test_probs = self.calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
         y_pred = (calib_test_probs >= 0.45).astype(int)
         
         acc = accuracy_score(y_test, y_pred)
@@ -233,14 +233,16 @@ class LightGBMPredictor:
         # Ambil raw probabilitas dari LightGBM
         raw_prob = self.model.predict_proba(df_live)[0][1]
         
-        # ponytail: use per-session calibrator if available, else global
-        # ceiling: replace with dedicated per-session LightGBM trees at 50k+ rows
+        # ponytail: use per-session calibrator if available and valid (n >= 250), else global
         calibrator = self.calibrator
         if session and hasattr(self, 'session_calibrators'):
             calibrator = self.session_calibrators.get(session, calibrator)
         
         if calibrator is not None:
-            calibrated_prob = float(calibrator.predict([raw_prob])[0])
+            if hasattr(calibrator, 'predict_proba'):
+                calibrated_prob = float(calibrator.predict_proba([[raw_prob]])[0][1])
+            else:
+                calibrated_prob = float(calibrator.predict([raw_prob])[0])
             return calibrated_prob
         return raw_prob
 

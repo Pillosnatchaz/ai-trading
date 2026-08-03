@@ -161,6 +161,7 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 - **Class imbalance handling added** (`is_unbalance=True` or explicit `scale_pos_weight`) — missing in v3.0 despite a ~34%/66% win/loss split.
 - **Regularization added explicitly**: `min_child_samples`, `num_leaves`, `lambda_l1/l2` all tuned via the same walk-forward harness (currently unset/default in v3.0 — a real overfitting risk given noisy financial labels).
 - **Post-hoc probability calibration layer** (isotonic regression or Platt scaling), fit **separately per direction**, sitting between raw LightGBM output and the live threshold check. This is a direct, structural response to the discovered inverse-calibration finding on SELL and the flat/capped curve on BUY — rather than trusting raw `predict_proba` output as tradeable confidence, it gets recalibrated against actual realized outcomes before being thresholded.
+  - **Known issue (Aug 2026):** Isotonic regression produces flat/degenerate calibration curves because LightGBM raw probabilities cluster in a narrow band (~0.30–0.50). SELL global calibrator maps raw 0.05–0.70 to the same 0.4049; SELL ASIAN has only 2 unique outputs. **Candidate fix:** switch to Platt scaling (LogisticRegression sigmoid), which always produces a smooth monotonic curve even with clustered inputs. Deferred — London session is profitable with the current flat calibrator, so change should be tested during a non-trading window.
 - **Liquidity-sweep and session-transition features feed both models** (not a separate third model yet — see §9 for the deferred regime-classifier idea).
 
 ---
@@ -185,6 +186,7 @@ Fix label collapsing, feature mislabeling/sentinel issues, add dynamic ATR-based
 - Proper swing-based OTE/OB reintroduction, if the sweep feature proves out and there's appetite for more SMC surface area.
 - BOS/CHOCH genuine structure-sequence detection.
 - Direction-asymmetric time barriers if §5.2 investigation supports it.
+- **Equity-based position sizing (1% risk):** Replace fixed $10 risk with `0.01 × account_equity`. Requires EA to send `AccountInfoDouble(ACCOUNT_EQUITY)` in ZMQ JSON payload. Current fixed $10 is ~1% on $1,000 but won't scale as equity grows.
 
 **Phase 3 (exploratory, not committed):**
 - Regime classifier as an explicit gating model ahead of BUY/SELL inference (the four-model architecture proposed in external review) — only worth pursuing once the two-model system's calibration is proven stable, given the data-starvation risk of further conditioning an already-thin trade sample.
