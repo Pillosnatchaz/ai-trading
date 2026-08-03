@@ -1,11 +1,13 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 import numpy as np
 import sqlite3
 import json
-import os
 import lightgbm as lgb
 import joblib
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 
 class LightGBMPredictor:
@@ -71,7 +73,13 @@ class LightGBMPredictor:
         
         # Ekstrak Jam (Hour) dari timestamp untuk Regime Filtering
         if 'timestamp' in df.columns:
-            df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
+            df['hour_utc'] = pd.to_datetime(df['timestamp']).dt.hour
+            # ponytail: tag session per row for per-session calibrator fitting
+            df['_wib_hour'] = (df['hour_utc'] + 7) % 24
+            df['_session'] = 'OTHER'
+            df.loc[(df['_wib_hour'] >= 14) & (df['_wib_hour'] < 19.5), '_session'] = 'LONDON'
+            df.loc[(df['_wib_hour'] >= 19.5) & (df['_wib_hour'] <= 22), '_session'] = 'OVERLAP'
+            df.loc[(df['_wib_hour'] >= 8) & (df['_wib_hour'] < 12), '_session'] = 'ASIAN'
             
         # ponytail: encode macro_bias & volatility_regime strings into numbers for LightGBM
         if 'macro_bias' in df.columns:
@@ -97,9 +105,6 @@ class LightGBMPredictor:
         # Pisahkan Fitur (X) dan Target (y)
         X = df.drop(columns=['target_label'])
         y = df['target_label']
-        
-        # Simpan nama fitur agar konsisten saat prediksi live
-        self.feature_names = list(X.columns)
 
         # Split 80% Training, 20% Testing dengan Embargo Gap (120 baris) untuk mencegah boundary leakage
         split_idx = int(len(X) * 0.8)
@@ -110,16 +115,27 @@ class LightGBMPredictor:
         cal_split = int(len(X_train) * 0.8)
         X_tr, X_cal = X_train.iloc[:cal_split], X_train.iloc[cal_split:]
         y_tr, y_cal = y_train.iloc[:cal_split], y_train.iloc[cal_split:]
+        # ponytail: keep session tags for per-session calibrator fitting, then drop from features
+        cal_sessions = df.iloc[X_cal.index]['_session'] if '_session' in df.columns else pd.Series(['OTHER'] * len(X_cal))
 
         print("[*] Melatih model LightGBM & Isotonic Probability Calibrator (PRD §7)...")
         # ponytail: read from config so we can tune from one place
         from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
-        from sklearn.calibration import IsotonicRegression
+        from sklearn.isotonic import IsotonicRegression
         
         # Calculate pos_weight for class imbalance (~34% win minority)
         n_neg = (y_tr == 0).sum()
         n_pos = (y_tr == 1).sum()
         pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
+        
+        # ponytail: drop internal session columns before training
+        internal_cols = ['_wib_hour', '_session', 'hour_utc']
+        X_tr = X_tr.drop(columns=[c for c in internal_cols if c in X_tr.columns], errors='ignore')
+        X_cal = X_cal.drop(columns=[c for c in internal_cols if c in X_cal.columns], errors='ignore')
+        X_test = X_test.drop(columns=[c for c in internal_cols if c in X_test.columns], errors='ignore')
+        
+        # Simpan nama fitur AFTER dropping internal cols so count matches model
+        self.feature_names = list(X_tr.columns)
         
         self.model = lgb.LGBMClassifier(
             n_estimators=LGBM_ESTIMATORS,
@@ -132,10 +148,23 @@ class LightGBMPredictor:
         
         self.model.fit(X_tr, y_tr)
 
-        # Fit PRD §7 Post-hoc Isotonic Calibration Layer
+        # Fit PRD §7 Global Isotonic Calibration Layer
         raw_cal_probs = self.model.predict_proba(X_cal)[:, 1]
         self.calibrator = IsotonicRegression(out_of_bounds='clip')
         self.calibrator.fit(raw_cal_probs, y_cal)
+
+        # ponytail: fit per-session isotonic calibrators (middle-ground architecture)
+        # ceiling: upgrade to dedicated per-session LightGBM trees at 50k+ rows
+        self.session_calibrators = {}
+        for sess in ['LONDON', 'OVERLAP', 'ASIAN']:
+            mask = cal_sessions.values == sess
+            if mask.sum() >= 20:  # ponytail: need minimum 20 samples for isotonic fit
+                sess_cal = IsotonicRegression(out_of_bounds='clip')
+                sess_cal.fit(raw_cal_probs[mask], y_cal.values[mask])
+                self.session_calibrators[sess] = sess_cal
+                print(f"    [+] Per-session calibrator fitted: {sess} (n={mask.sum()})")
+            else:
+                print(f"    [!] {sess} calibrator skipped (n={mask.sum()}, need 20+). Using global.")
 
         # Evaluasi dengan Isotonic Calibrated probabilities
         raw_test_probs = self.model.predict_proba(X_test)[:, 1]
@@ -176,9 +205,10 @@ class LightGBMPredictor:
         # Simpan Model & Nama Fitur
         self.save_model()
 
-    def predict(self, features_dict):
+    def predict(self, features_dict, session=None):
         """
         Melakukan prediksi dari 1 baris data live.
+        session: optional session string ('LONDON', 'OVERLAP', 'ASIAN') for per-session calibration.
         Return: float probabilitas ISOTONIC CALIBRATED (0.0 sampai 1.0) peluang keberhasilan trade.
         """
         if self.model is None or self.feature_names is None:
@@ -203,9 +233,14 @@ class LightGBMPredictor:
         # Ambil raw probabilitas dari LightGBM
         raw_prob = self.model.predict_proba(df_live)[0][1]
         
-        # PRD §7: Pass raw probability through Isotonic Calibrator
-        if hasattr(self, 'calibrator') and self.calibrator is not None:
-            calibrated_prob = float(self.calibrator.predict([raw_prob])[0])
+        # ponytail: use per-session calibrator if available, else global
+        # ceiling: replace with dedicated per-session LightGBM trees at 50k+ rows
+        calibrator = self.calibrator
+        if session and hasattr(self, 'session_calibrators'):
+            calibrator = self.session_calibrators.get(session, calibrator)
+        
+        if calibrator is not None:
+            calibrated_prob = float(calibrator.predict([raw_prob])[0])
             return calibrated_prob
         return raw_prob
 
@@ -214,6 +249,7 @@ class LightGBMPredictor:
         model_data = {
             'model': self.model,
             'calibrator': getattr(self, 'calibrator', None),
+            'session_calibrators': getattr(self, 'session_calibrators', {}),
             'feature_names': self.feature_names
         }
         joblib.dump(model_data, self.model_path)
@@ -234,8 +270,10 @@ class LightGBMPredictor:
                 model_data = joblib.load(self.model_path)
                 self.model = model_data['model']
                 self.calibrator = model_data.get('calibrator', None)
+                self.session_calibrators = model_data.get('session_calibrators', {})
                 self.feature_names = model_data['feature_names']
-                print(f"[*] Model AI (LightGBM + Isotonic Calibrated - {self.direction.upper()} | Hash: {self.get_model_version_hash()}) berhasil dimuat.")
+                sess_count = len(self.session_calibrators)
+                print(f"[*] Model AI (LightGBM + Isotonic Calibrated - {self.direction.upper()} | Hash: {self.get_model_version_hash()} | Session Calibrators: {sess_count}) berhasil dimuat.")
             except Exception as e:
                 print(f"[!] Gagal memuat model: {e}")
 

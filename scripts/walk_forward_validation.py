@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.insert(0, r"G:\Projects\ai-trading")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import numpy as np
@@ -21,7 +21,7 @@ def run_walk_forward_validation(direction='buy', n_splits=5, embargo_bars=120):
         print("[!] Insufficient data for walk-forward validation (minimum 500 rows required).")
         return
 
-    X = df.drop(columns=['target_label'])
+    X = df.drop(columns=['target_label', '_wib_hour', '_session', 'hour_utc'], errors='ignore')
     y = df['target_label']
 
     total_samples = len(X)

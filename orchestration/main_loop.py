@@ -167,8 +167,9 @@ def main_loop(port=5557):
                 features["session"] = current_session
 
                 # ML prediksi peluang (0% - 100%)
-                prob_buy = ml_model_buy.predict(features)
-                prob_sell = ml_model_sell.predict(features)
+                # ponytail: route through per-session calibrator (middle-ground architecture)
+                prob_buy = ml_model_buy.predict(features, session=current_session)
+                prob_sell = ml_model_sell.predict(features, session=current_session)
                 
                 # Simpan probabilitas ke features agar tercatat di database (untuk audit nanti)
                 features["live_prob_buy"] = prob_buy
@@ -202,7 +203,18 @@ def main_loop(port=5557):
                 # Only trade if we are in high priority sessions
                 tradeable_sessions = ["LONDON", "OVERLAP"]
                 
-                if (current_session in tradeable_sessions) and not news_embargo:
+                # ponytail: Monday Asian session enabled for both directions (testing high-vol regime)
+                # Empirical baseline: SELL 48.46% WR (+EV), BUY 18.05% WR (historically weak)
+                # ceiling: revert to SELL-only if Monday BUY WR stays below 30% after 4 weeks
+                import calendar as cal_mod
+                if current_session == "ASIAN" and now.weekday() == 0:  # Monday
+                    tradeable_sessions.append("ASIAN")
+                
+                # ponytail: 15-minute London Open Cooldown (14:00-14:15 WIB)
+                # Empirical: opening spike fakeouts caused 11 losses / 3 wins
+                london_cooldown = (current_session == "LONDON" and time_val >= 14.0 and time_val < 14.25)
+                
+                if (current_session in tradeable_sessions) and not news_embargo and not london_cooldown:
                     # Pick the highest probability
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
@@ -218,20 +230,30 @@ def main_loop(port=5557):
                         bid = data.get('bid', 0.0)
                         atr = features.get('atr', 1.5)
                         
-                        # Dynamic ATR & Swing SL/TP calculation
-                        atr_sl_pips = round((atr * 1.5) * 10)
+                        # ponytail: Dynamic Per-Session ATR SL/TP Scaling
+                        # ceiling: these multipliers are empirical from week 1 data, revisit at n=500+ trades per session
+                        if current_session == "LONDON":
+                            atr_sl_mult, atr_tp_mult = 1.3, 2.0
+                        elif current_session == "OVERLAP":
+                            atr_sl_mult, atr_tp_mult = 2.0, 3.0
+                        else:  # ASIAN
+                            atr_sl_mult, atr_tp_mult = 1.0, 1.5
+                        
+                        atr_sl_pips = round((atr * atr_sl_mult) * 10)
+                        atr_tp_pips = round((atr * atr_tp_mult) * 10)
+                        
                         if best_dir == "BUY":
                             swing_low = features.get('swing_low', ask - 4.0)
                             swing_sl_pips = round(abs(ask - (swing_low - 0.20)) * 10)
-                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(30, min(90, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_buy.get_model_version_hash()
                         else:
                             swing_high = features.get('swing_high', bid + 4.0)
                             swing_sl_pips = round(abs((swing_high + 0.20) - bid) * 10)
-                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(30, min(90, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_sell.get_model_version_hash()
                             
-                        tp_pips = round(sl_pips * 1.5)
+                        tp_pips = max(round(sl_pips * 1.5), atr_tp_pips)
                         
                         # Dynamic Position Sizing ($10 fixed dollar risk target)
                         target_risk_usd = 10.0
