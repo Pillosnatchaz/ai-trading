@@ -121,7 +121,11 @@ def main_loop(port=5557):
                             new_events = []
                             for event in root.findall('.//event'):
                                 impact = event.findtext('impact', '').strip()
-                                if impact not in ('High', 'Holiday'):
+                                country = event.findtext('country', '').strip()
+                                title = event.findtext('title', 'Unknown').strip()
+                                
+                                # ponytail: only block for USD High-Impact red folder news, ignore Bank Holidays
+                                if impact != 'High' or country != 'USD' or 'Holiday' in title:
                                     continue
                                 date_str = event.findtext('date', '').strip()
                                 time_str = event.findtext('time', '').strip()
@@ -130,7 +134,6 @@ def main_loop(port=5557):
                                 try:
                                     event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
                                     event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
-                                    title = event.findtext('title', 'Unknown')
                                     new_events.append((event_dt, title))
                                 except ValueError:
                                     continue
@@ -154,15 +157,22 @@ def main_loop(port=5557):
                 features["macro_bias"] = macro_bias
                 
                 # ponytail: label trading session directly into JSON features for future ML
-                now = datetime.datetime.now() # Assuming server is UTC+7 (WIB)
+                # ponytail: exact WIB (UTC+7) session boundaries
+                # ASIAN:   05:00 - 13:59 WIB
+                # LONDON:  14:00 - 18:59 WIB
+                # OVERLAP: 19:00 - 22:00 WIB (Hard cutoff at 22:00 WIB to stop late-night spread bleed)
+                # CLOSED:  22:01 - 04:59 WIB (Off-hours / late night)
+                now = datetime.datetime.now()
                 time_val = now.hour + (now.minute / 60.0)
                 
-                if 14.0 <= time_val < 19.5:
+                if 5.0 <= time_val < 14.0:
+                    current_session = "ASIAN"
+                elif 14.0 <= time_val < 19.0:
                     current_session = "LONDON"
-                elif 19.5 <= time_val <= 22.0:  # ponytail: PRD v4.0 — hard cutoff at 22:00 WIB to stop late-night spread bleed
+                elif 19.0 <= time_val <= 22.0:
                     current_session = "OVERLAP"
                 else:
-                    current_session = "ASIAN"
+                    current_session = "CLOSED"
                 
                 features["session"] = current_session
 
