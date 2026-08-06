@@ -20,6 +20,8 @@
   - Pass `scale_pos_weight = 1.9` in `LGBMClassifier` so trees weight winning setups equally.
 - [x] **Fix FVG Feature (`dist_to_fvg = 9999`):**
   - Split into `has_fvg` (1/0 binary) and `dist_to_fvg` (`np.nan` when no active FVG exists) to eliminate arbitrary `9999` split distortion.
+- [ ] **Fix Missing ATR Normalization in `feature_builder.py`:**
+  - `mom_dist_m5/m15/h1` and `dist_ema_50` were documented in PRD to divide by `ATR`, but code still divides by `last_bid`. Must update formula and regenerate entire historical feature set for v4.1.
 
 ---
 

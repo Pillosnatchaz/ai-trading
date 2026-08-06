@@ -9,6 +9,35 @@ import json
 import lightgbm as lgb
 import joblib
 from sklearn.metrics import accuracy_score, classification_report
+from scipy.optimize import minimize
+
+class MonotonicPlattScaler:
+    """Platt Calibrator with strict non-negative slope constraint (coef >= 0).
+    Guarantees calibrator NEVER inverts model ranking order under noise."""
+    def __init__(self):
+        self.coef_ = 1.0
+        self.intercept_ = 0.0
+        
+    def fit(self, X_raw, y):
+        X_flat = np.asarray(X_raw).flatten()
+        y_flat = np.asarray(y).flatten()
+        def loss(params):
+            a, b = params
+            z = a * X_flat + b
+            p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+            eps = 1e-15
+            p = np.clip(p, eps, 1 - eps)
+            return -np.mean(y_flat * np.log(p) + (1 - y_flat) * np.log(1 - p))
+        
+        res = minimize(loss, [1.0, 0.0], bounds=[(0.0, None), (None, None)], method='L-BFGS-B')
+        self.coef_ = float(res.x[0])
+        self.intercept_ = float(res.x[1])
+        
+    def predict_proba(self, X_raw):
+        X_flat = np.asarray(X_raw).flatten()
+        z = self.coef_ * X_flat + self.intercept_
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+        return np.column_stack([1 - p, p])
 
 class LightGBMPredictor:
     def __init__(self, db_filename='ai_data.db', direction='buy'):
@@ -46,7 +75,7 @@ class LightGBMPredictor:
             SELECT features_json, {target_col}, timestamp, id,
                    ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp) ORDER BY id DESC) as rn
             FROM snapshots
-            WHERE {target_col} IS NOT NULL AND {target_col} != -2
+            WHERE {target_col} IS NOT NULL AND {target_col} != -2 AND timestamp >= '2026-07-24'
         ) WHERE rn = 1 ORDER BY id ASC
         """
         cursor = conn.cursor()
@@ -118,16 +147,11 @@ class LightGBMPredictor:
         # ponytail: keep session tags for per-session calibrator fitting, then drop from features
         cal_sessions = df.iloc[X_cal.index]['_session'] if '_session' in df.columns else pd.Series(['OTHER'] * len(X_cal))
 
-        print("[*] Melatih model LightGBM & Platt Probability Calibrator (PRD §7)...")
+        print("[*] Melatih model LightGBM & Global True Logit Platt Calibrator (PRD §7)...")
         # ponytail: read from config so we can tune from one place
         from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
         from sklearn.linear_model import LogisticRegression
-        
-        # Calculate pos_weight for class imbalance (~34% win minority)
-        n_neg = (y_tr == 0).sum()
-        n_pos = (y_tr == 1).sum()
-        pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
-        
+
         # ponytail: drop internal session columns before training
         internal_cols = ['_wib_hour', '_session', 'hour_utc']
         X_tr = X_tr.drop(columns=[c for c in internal_cols if c in X_tr.columns], errors='ignore')
@@ -136,6 +160,11 @@ class LightGBMPredictor:
         
         # Simpan nama fitur AFTER dropping internal cols so count matches model
         self.feature_names = list(X_tr.columns)
+        
+        # Calculate pos_weight for class imbalance (~34% win minority)
+        n_neg = (y_tr == 0).sum()
+        n_pos = (y_tr == 1).sum()
+        pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
         
         self.model = lgb.LGBMClassifier(
             n_estimators=LGBM_ESTIMATORS,
@@ -148,32 +177,33 @@ class LightGBMPredictor:
         
         self.model.fit(X_tr, y_tr)
 
-        # Fit PRD §7 Global Platt Calibration Layer (LogisticRegression)
-        # ponytail: Platt scaling replaces Isotonic to prevent flat step-function collapse on clustered raw probs
-        raw_cal_probs = self.model.predict_proba(X_cal)[:, 1]
-        self.calibrator = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
-        self.calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal)
-
-        # ponytail: fit per-session Platt calibrators with minimum cell threshold (n >= 250)
+        # Fit Global True Logit Platt Calibration Layer
+        raw_cal_probs = np.clip(self.model.predict_proba(X_cal)[:, 1], 1e-7, 1 - 1e-7)
+        f_cal = np.log(raw_cal_probs / (1.0 - raw_cal_probs))
+        
+        self.calibrator = MonotonicPlattScaler()
+        self.calibrator.fit(f_cal, y_cal)
+        
+        # Fit Per-Session Calibrators
         self.session_calibrators = {}
-        for sess in ['LONDON', 'OVERLAP', 'ASIAN']:
-            mask = cal_sessions.values == sess
-            if mask.sum() >= 250:
-                sess_cal = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
-                sess_cal.fit(raw_cal_probs[mask].reshape(-1, 1), y_cal.values[mask])
-                self.session_calibrators[sess] = sess_cal
-                print(f"    [+] Per-session Platt calibrator fitted: {sess} (n={mask.sum()})")
-            else:
-                print(f"    [!] {sess} calibrator skipped (n={mask.sum()}, need 250+). Using global fallback.")
+        for sess in cal_sessions.unique():
+            mask = (cal_sessions == sess)
+            if mask.sum() > 30:  # Need at least some data to fit logistic regression
+                sess_lr = MonotonicPlattScaler()
+                # check if there is more than 1 class in y_cal[mask]
+                if len(np.unique(y_cal[mask])) > 1:
+                    sess_lr.fit(f_cal[mask], y_cal[mask])
+                    self.session_calibrators[sess] = sess_lr
 
-        # Evaluasi dengan Platt Calibrated probabilities
-        raw_test_probs = self.model.predict_proba(X_test)[:, 1]
-        calib_test_probs = self.calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
+        # Evaluasi dengan Global True Platt Calibrated probabilities
+        raw_test_probs = np.clip(self.model.predict_proba(X_test)[:, 1], 1e-7, 1 - 1e-7)
+        f_test = np.log(raw_test_probs / (1.0 - raw_test_probs))
+        calib_test_probs = self.calibrator.predict_proba(f_test.reshape(-1, 1))[:, 1]
         y_pred = (calib_test_probs >= 0.45).astype(int)
         
         acc = accuracy_score(y_test, y_pred)
         baseline_acc = (y_test == 0).sum() / len(y_test)
-        print(f"\n[+] Training & Calibration Selesai!")
+        print(f"\n[+] Training & Global Platt Calibration Selesai!")
         print(f"    Baseline (always predict loss): {baseline_acc * 100:.2f}%")
         print(f"    Model Accuracy:                 {acc * 100:.2f}%  (lift: +{(acc - baseline_acc) * 100:.1f}%)")
         print(f"    Trades taken (prob >= 0.45):    {(y_pred == 1).sum()} / {len(y_pred)} ({(y_pred == 1).sum() / len(y_pred) * 100:.1f}%)")
@@ -205,11 +235,10 @@ class LightGBMPredictor:
         # Simpan Model & Nama Fitur
         self.save_model()
 
-    def predict(self, features_dict, session=None):
+    def predict(self, features_dict, session=None, return_raw=False):
         """
         Melakukan prediksi dari 1 baris data live.
-        session: optional session string ('LONDON', 'OVERLAP', 'ASIAN') for per-session calibration.
-        Return: float probabilitas ISOTONIC CALIBRATED (0.0 sampai 1.0) peluang keberhasilan trade.
+        Return: float probabilitas TRUE PLATT CALIBRATED (0.0 sampai 1.0) peluang keberhasilan trade.
         """
         if self.model is None or self.feature_names is None:
             return 0.0
@@ -231,20 +260,23 @@ class LightGBMPredictor:
         df_live = df_live[self.feature_names].astype(float)
 
         # Ambil raw probabilitas dari LightGBM
-        raw_prob = self.model.predict_proba(df_live)[0][1]
+        raw_prob = float(self.model.predict_proba(df_live)[0][1])
+        raw_prob_clipped = float(np.clip(raw_prob, 1e-7, 1.0 - 1e-7))
         
-        # ponytail: use per-session calibrator if available and valid (n >= 250), else global
-        calibrator = self.calibrator
-        if session and hasattr(self, 'session_calibrators'):
-            calibrator = self.session_calibrators.get(session, calibrator)
+        # Convert to raw margin logit f = ln(p / (1 - p))
+        f_live = float(np.log(raw_prob_clipped / (1.0 - raw_prob_clipped)))
         
-        if calibrator is not None:
-            if hasattr(calibrator, 'predict_proba'):
-                calibrated_prob = float(calibrator.predict_proba([[raw_prob]])[0][1])
-            else:
-                calibrated_prob = float(calibrator.predict([raw_prob])[0])
-            return calibrated_prob
-        return raw_prob
+        calibrated_prob = raw_prob
+        # ponytail: Route through per-session calibrator if it exists
+        if session and hasattr(self, 'session_calibrators') and session in self.session_calibrators:
+            calibrated_prob = float(self.session_calibrators[session].predict_proba([[f_live]])[0][1])
+        # Fallback to global calibrator
+        elif hasattr(self, 'calibrator') and self.calibrator is not None:
+            calibrated_prob = float(self.calibrator.predict_proba([[f_live]])[0][1])
+            
+        if return_raw:
+            return calibrated_prob, raw_prob
+        return calibrated_prob
 
     def save_model(self):
         """Menyimpan model ke disk."""

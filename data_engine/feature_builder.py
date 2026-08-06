@@ -45,9 +45,10 @@ class FeatureBuilder:
         ema_50_slope = (ema_50_current - ema_50_past) / ema_50_past if ema_50_past != 0 else 0.0
 
         # Time / Session Transition Countdown (WIB boundaries: 14:00, 19:30, 22:00)
-        import datetime
-        now = datetime.datetime.now()
-        current_minutes = now.hour * 60 + now.minute
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
+        current_minutes = now_wib.hour * 60 + now_wib.minute
         session_boundaries = [14 * 60, 19 * 60 + 30, 22 * 60]
         future_boundaries = [b - current_minutes for b in session_boundaries if b > current_minutes]
         mins_to_session_transition = min(future_boundaries) if len(future_boundaries) > 0 else 999.0

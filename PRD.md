@@ -146,12 +146,15 @@ Every labeling and validation change must report BUY and SELL metrics **separate
     - `PCT_EQUITY`: Fixed percentage equity risk per trade ($0.5\% - 1.0\%$).
   - Martingale explicitly banned at the architecture level (no lot-scaling-on-loss code path exists anywhere in the system).
 - **Dynamic ATR & Swing-based SL/TP**, replacing static 40/60 pip targets:
-  - `SL = max(k_sl × ATR_14, Swing_Boundary_Offset)`, `TP = k_tp × ATR_14` (or Fib expansion off swing leg).
+  - `SL = max(15, min(90, max(k_sl × ATR_14, Swing_Boundary_Offset)))` (Removed 30-pip floor to allow small scalp trades).
+  - `TP = round(SL * 1.5)` (Strict 1:1.5 RR, no overrides).
   - Uses `get_swing_levels()` (lookback=20) to place SL 2 pips beyond recent Swing High/Low boundaries.
   - Directly addresses the v3.0 failure mode: fixed 60-pip TP too far in low vol (timeout decay), fixed 40-pip SL too tight in high vol (Fast SOTW).
 - **Session throttle (22:00 WIB Cutoff)**: Suspend new entries in the **last 60 minutes of OVERLAP session (22:00–23:00 WIB)** to avoid low-liquidity spread bleed that wiped out London profits in v3.0.
 - **News embargo**: unchanged from v3.0 (30m pre / 60m post high-impact ForexFactory events) — this was already correctly identified as a strength.
-- **Regime gate**: the existing softened H1-trend filter is kept, but reframed as a first-class pipeline stage (§3) rather than an inline threshold buried in `main_loop.py`, and its threshold (`h1_threshold = 0.0015`) moves from hand-set to grid-searched (§8).
+- **Regime gate (The Dead Zone Filter)**: The single H1-trend threshold is replaced by an asymmetric, dual-boundary "Dead Zone". Data proves Gold mean-reverts at extreme extremities (e.g. 50% WR at -0.0040 dumps). 
+  - **SELL Danger Zone:** `0.0012 < rel_h1 < 0.0035` (Blocks shorting into normal breakouts; allows shorting parabolic exhaustion).
+  - **BUY Danger Zone:** `-0.0029 < rel_h1 < -0.0018` (Blocks catching normal falling knives; allows buying deep exhaustion bottoms).
 
 ---
 

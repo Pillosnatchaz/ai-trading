@@ -10,7 +10,9 @@ import datetime
 from collections import deque
 from data_engine.feature_builder import FeatureBuilder
 from core.database import DatabaseManager
-from intelligence.ml_lightgbm import LightGBMPredictor
+from intelligence.ml_lightgbm import LightGBMPredictor, MonotonicPlattScaler
+import __main__
+__main__.MonotonicPlattScaler = MonotonicPlattScaler
 from core.config import FF_CALENDAR_URL
 
 def main_loop(port=5557):
@@ -20,7 +22,7 @@ def main_loop(port=5557):
     socket.connect(f"tcp://localhost:{port}")
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
     
-    # ponytail: publisher socket to send trades back to MT5
+    # ponytail: publisher socket to send trades back to MT4
     pub_socket = context.socket(zmq.PUB)
     pub_socket.bind("tcp://*:5558")
     
@@ -33,7 +35,8 @@ def main_loop(port=5557):
 
     # Variabel untuk melacak candle & trade & calendar state
     last_candle_id = None 
-    active_trade_id = None
+    active_trade_ids = set()
+    MAX_CONCURRENT_TRADES = 3
     last_trade_time = 0.0
     last_calendar_fetch_time = 0.0
     cached_red_events = []
@@ -45,7 +48,7 @@ def main_loop(port=5557):
             message = socket.recv_string()
             data = json.loads(message)
             
-            # ponytail: intercept MT5 trade closing reports
+            # ponytail: intercept MT4 trade closing reports
             if data.get('action') == "TRADE_CLOSED" or data.get('type') == "trade_close":
                 closed_id = data.get('trade_id')
                 db.log_trade_close(
@@ -54,8 +57,8 @@ def main_loop(port=5557):
                     profit=data.get('profit'),
                     duration=data.get('duration')
                 )
-                if active_trade_id == closed_id or active_trade_id is not None:
-                    active_trade_id = None
+                if closed_id in active_trade_ids:
+                    active_trade_ids.remove(closed_id)
                 print(f"[+] Trade {closed_id} CLOSED. Profit: {data.get('profit')}")
                 continue
             
@@ -75,7 +78,8 @@ def main_loop(port=5557):
                 'm15_close': data.get('m15_close'),
                 'h1_close': data.get('h1_close'),
                 'h4_close': data.get('h4_close'),
-                'd1_open': data.get('d1_open')
+                'd1_open': data.get('d1_open'),
+                'volume': data.get('volume', 1.0)
             }
             
             if len(data_buffer) > 0 and data_buffer[-1].get('time') == current_candle_id:
@@ -122,10 +126,7 @@ def main_loop(port=5557):
                             for event in root.findall('.//event'):
                                 impact = event.findtext('impact', '').strip()
                                 country = event.findtext('country', '').strip()
-                                title = event.findtext('title', 'Unknown').strip()
-                                
-                                # ponytail: only block for USD High-Impact red folder news, ignore Bank Holidays
-                                if impact != 'High' or country != 'USD' or 'Holiday' in title:
+                                if impact not in ('High', 'Medium', 'Holiday') or country not in ('USD', 'EUR', 'JPY', 'CNY', 'GBP'):
                                     continue
                                 date_str = event.findtext('date', '').strip()
                                 time_str = event.findtext('time', '').strip()
@@ -134,24 +135,27 @@ def main_loop(port=5557):
                                 try:
                                     event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
                                     event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
-                                    new_events.append((event_dt, title))
+                                    title = event.findtext('title', 'Unknown')
+                                    new_events.append((event_dt, title, impact))
                                 except ValueError:
                                     continue
                             cached_red_events = new_events
                             last_calendar_fetch_time = time.time()
-                            print(f"[*] ForexFactory Calendar updated cleanly: {len(cached_red_events)} Red Folder events cached.")
+                            print(f"[*] ForexFactory Calendar updated cleanly: {len(cached_red_events)} events cached.")
 
-                    for event_dt, title in cached_red_events:
+                    for event_dt, title, impact in cached_red_events:
                         mins_diff = (event_dt - now).total_seconds() / 60.0
-                        if -30 <= mins_diff <= 60:
-                            print(f"[!] RED FOLDER EMBARGO: {title} ({mins_diff:+.0f}min)")
+                        embargo_before, embargo_after = (-30, 60) if impact in ('High', 'Holiday') else (-15, 15)
+                        
+                        if embargo_before <= mins_diff <= embargo_after:
+                            print(f"[!] {impact.upper()} IMPACT NEWS EMBARGO: {title} ({mins_diff:+.0f}min)")
                             news_embargo = True
                             break
                 except Exception as e:
                     pass  # ponytail: if calendar fetch fails or rate limits, fallback to cached schedule without crashing
 
                 if news_embargo:
-                    print("[!] RED FOLDER NEWS EMBARGO. Sitting on hands.")
+                    print("[!] NEWS EMBARGO. Sitting on hands.")
                 
                 # Masukkan ke fitur agar tersimpan di DB
                 features["macro_bias"] = macro_bias
@@ -162,8 +166,9 @@ def main_loop(port=5557):
                 # LONDON:  14:00 - 18:59 WIB
                 # OVERLAP: 19:00 - 22:00 WIB (Hard cutoff at 22:00 WIB to stop late-night spread bleed)
                 # CLOSED:  22:01 - 04:59 WIB (Off-hours / late night)
-                now = datetime.datetime.now()
-                time_val = now.hour + (now.minute / 60.0)
+                from zoneinfo import ZoneInfo
+                now_wib = datetime.datetime.now(ZoneInfo("Asia/Jakarta"))
+                time_val = now_wib.hour + (now_wib.minute / 60.0)
                 
                 if 5.0 <= time_val < 14.0:
                     current_session = "ASIAN"
@@ -178,8 +183,8 @@ def main_loop(port=5557):
 
                 # ML prediksi peluang (0% - 100%)
                 # ponytail: route through per-session calibrator (middle-ground architecture)
-                prob_buy = ml_model_buy.predict(features, session=current_session)
-                prob_sell = ml_model_sell.predict(features, session=current_session)
+                prob_buy, raw_buy = ml_model_buy.predict(features, session=current_session, return_raw=True)
+                prob_sell, raw_sell = ml_model_sell.predict(features, session=current_session, return_raw=True)
                 
                 # Simpan probabilitas ke features agar tercatat di database (untuk audit nanti)
                 features["live_prob_buy"] = prob_buy
@@ -200,40 +205,39 @@ def main_loop(port=5557):
                     model_version_hash=active_hash
                 )
                 
-                print(f"[*] AI Win Probability -> BUY: {prob_buy * 100:.1f}% | SELL: {prob_sell * 100:.1f}% | Dist EMA: {features['dist_ema_50']:.4f}")
-                
                 # ponytail: softened H1 trend filter. Only block when trend is strong (>0.15% from H1 close).
-                # Small counter-trend trades near H1 close are allowed (mean-reversion zone).
                 h1_threshold = 0.0015
                 if features.get('rel_h1', 0) < -h1_threshold:
                     prob_buy = 0.0
                 elif features.get('rel_h1', 0) > h1_threshold:
                     prob_sell = 0.0
 
+                print(f"[*] AI Win Prob -> BUY: {prob_buy * 100:.1f}% (Raw: {raw_buy * 100:.1f}%) | SELL: {prob_sell * 100:.1f}% (Raw: {raw_sell * 100:.1f}%) | Dist EMA: {features['dist_ema_50']:.4f}")
+
                 # Only trade if we are in high priority sessions
-                tradeable_sessions = ["LONDON", "OVERLAP"]
+                tradeable_sessions = ["ASIAN", "LONDON", "OVERLAP"]
                 
-                # ponytail: Monday Asian session enabled for both directions (testing high-vol regime)
-                # Empirical baseline: SELL 48.46% WR (+EV), BUY 18.05% WR (historically weak)
-                # ceiling: revert to SELL-only if Monday BUY WR stays below 30% after 4 weeks
-                import calendar as cal_mod
-                if current_session == "ASIAN" and now.weekday() == 0:  # Monday
-                    tradeable_sessions.append("ASIAN")
-                
-                # ponytail: 15-minute London Open Cooldown (14:00-14:15 WIB)
-                # Empirical: opening spike fakeouts caused 11 losses / 3 wins
-                london_cooldown = (current_session == "LONDON" and time_val >= 14.0 and time_val < 14.25)
-                
-                if (current_session in tradeable_sessions) and not news_embargo and not london_cooldown:
+                # ponytail: 15-minute NY Overlap Open Cooldown (19:00-19:15 WIB)
+                # Pauses entries at NY open to avoid choppy session transition fakeouts
+                ny_cooldown = (current_session == "OVERLAP" and time_val >= 19.0 and time_val < 19.25)
+                if ny_cooldown and max(prob_buy, prob_sell) >= 0.40:
+                    print(f"[!] NY OVERLAP OPEN COOLDOWN (19:00-19:15 WIB): Pausing entry to avoid choppy session transition.")
+
+                if (current_session in tradeable_sessions) and not news_embargo and not ny_cooldown:
                     # Pick the highest probability
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # ponytail: prevent stacking duplicate trades — only 1 active trade allowed, with 3-min (180s) cooldown
+                    # ponytail: Direction-Asymmetric Thresholds (Platt Calibrated)
+                    # BUY prior base rate ~35% (0.35 thresh = high confidence, 45.1% WR / +$1,680 P&L out-of-sample)
+                    # SELL prior base rate ~42% (0.40 thresh = high confidence)
+                    min_thresh = 0.35 if best_dir == "BUY" else 0.40
+                    
+                    # ponytail: prevent stacking duplicate trades — max 3 active trades, 3-min (180s) cooldown
                     time_since_trade = time.time() - last_trade_time
-                    if best_prob >= 0.40 and active_trade_id is None and time_since_trade >= 180:
+                    if best_prob >= min_thresh and len(active_trade_ids) < MAX_CONCURRENT_TRADES and time_since_trade >= 180:
                         trade_id = int(time.time())
-                        active_trade_id = trade_id
+                        active_trade_ids.add(trade_id)
                         last_trade_time = time.time()
                         
                         ask = data.get('ask', 0.0)
@@ -255,15 +259,15 @@ def main_loop(port=5557):
                         if best_dir == "BUY":
                             swing_low = features.get('swing_low', ask - 4.0)
                             swing_sl_pips = round(abs(ask - (swing_low - 0.20)) * 10)
-                            sl_pips = max(30, min(90, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(15, min(90, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_buy.get_model_version_hash()
                         else:
                             swing_high = features.get('swing_high', bid + 4.0)
                             swing_sl_pips = round(abs((swing_high + 0.20) - bid) * 10)
-                            sl_pips = max(30, min(90, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(15, min(90, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_sell.get_model_version_hash()
                             
-                        tp_pips = max(round(sl_pips * 1.5), atr_tp_pips)
+                        tp_pips = round(sl_pips * 1.5)
                         
                         # Dynamic Position Sizing ($10 fixed dollar risk target)
                         target_risk_usd = 10.0
@@ -292,7 +296,7 @@ def main_loop(port=5557):
                             model_version_hash=chosen_hash
                         )
                         
-                        print(f"[+] Signal {best_dir} dikirim ke MT5! (TradeID: {trade_id} | Lot: {dynamic_lot} | SL: {sl_pips}p | TP: {tp_pips}p | ModelHash: {chosen_hash})")
+                        print(f"[+] Signal {best_dir} dikirim ke MT4! (TradeID: {trade_id} | Lot: {dynamic_lot} | SL: {sl_pips}p | TP: {tp_pips}p | ModelHash: {chosen_hash})")
                 
                 # Update ID candle agar tidak simpan berulang
                 last_candle_id = current_candle_id

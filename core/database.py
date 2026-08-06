@@ -68,11 +68,15 @@ class DatabaseManager:
         cursor = conn.cursor()
         features_json = json.dumps(features)
         
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        wib_time = datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S")
+        
         query = """
-        INSERT INTO snapshots (symbol, price, high, low, features_json, label, sell_label, model_version_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO snapshots (timestamp, symbol, price, high, low, features_json, label, sell_label, model_version_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (symbol, price, high, low, features_json, label, sell_label, model_version_hash))
+        cursor.execute(query, (wib_time, symbol, price, high, low, features_json, label, sell_label, model_version_hash))
         conn.commit()
         conn.close()
 
@@ -82,12 +86,16 @@ class DatabaseManager:
         cursor = conn.cursor()
         feat_str = json.dumps(features)
         
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        wib_time = datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S")
+        
         query = """
         INSERT OR IGNORE INTO live_trades 
-        (trade_id, direction, entry_price, features_json, macro_bias, probability, model_version_hash, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN')
+        (trade_id, timestamp, direction, entry_price, features_json, macro_bias, probability, model_version_hash, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """
-        cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability, model_version_hash))
+        cursor.execute(query, (trade_id, wib_time, direction, entry_price, feat_str, macro_bias, probability, model_version_hash))
         conn.commit()
         conn.close()
 
