@@ -184,16 +184,9 @@ class LightGBMPredictor:
         self.calibrator = MonotonicPlattScaler()
         self.calibrator.fit(f_cal, y_cal)
         
-        # Fit Per-Session Calibrators
+        # ponytail: Disable Per-Session Calibrators. The dataset is too small, 
+        # causing small-N variance to jack up the intercept and blindly output 80% win probs.
         self.session_calibrators = {}
-        for sess in cal_sessions.unique():
-            mask = (cal_sessions == sess)
-            if mask.sum() > 30:  # Need at least some data to fit logistic regression
-                sess_lr = MonotonicPlattScaler()
-                # check if there is more than 1 class in y_cal[mask]
-                if len(np.unique(y_cal[mask])) > 1:
-                    sess_lr.fit(f_cal[mask], y_cal[mask])
-                    self.session_calibrators[sess] = sess_lr
 
         # Evaluasi dengan Global True Platt Calibrated probabilities
         raw_test_probs = np.clip(self.model.predict_proba(X_test)[:, 1], 1e-7, 1 - 1e-7)
