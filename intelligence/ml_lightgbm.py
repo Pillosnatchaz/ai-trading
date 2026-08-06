@@ -177,21 +177,20 @@ class LightGBMPredictor:
         
         self.model.fit(X_tr, y_tr)
 
-        # Fit Global True Logit Platt Calibration Layer
+        # Fit Global Isotonic Calibration Layer
         raw_cal_probs = np.clip(self.model.predict_proba(X_cal)[:, 1], 1e-7, 1 - 1e-7)
-        f_cal = np.log(raw_cal_probs / (1.0 - raw_cal_probs))
         
-        self.calibrator = MonotonicPlattScaler()
-        self.calibrator.fit(f_cal, y_cal)
+        from sklearn.isotonic import IsotonicRegression
+        self.calibrator = IsotonicRegression(out_of_bounds='clip')
+        self.calibrator.fit(raw_cal_probs, y_cal)
         
         # ponytail: Disable Per-Session Calibrators. The dataset is too small, 
         # causing small-N variance to jack up the intercept and blindly output 80% win probs.
         self.session_calibrators = {}
 
-        # Evaluasi dengan Global True Platt Calibrated probabilities
+        # Evaluasi dengan Global Isotonic Calibrated probabilities
         raw_test_probs = np.clip(self.model.predict_proba(X_test)[:, 1], 1e-7, 1 - 1e-7)
-        f_test = np.log(raw_test_probs / (1.0 - raw_test_probs))
-        calib_test_probs = self.calibrator.predict_proba(f_test.reshape(-1, 1))[:, 1]
+        calib_test_probs = self.calibrator.predict(raw_test_probs)
         y_pred = (calib_test_probs >= 0.45).astype(int)
         
         acc = accuracy_score(y_test, y_pred)
@@ -256,16 +255,9 @@ class LightGBMPredictor:
         raw_prob = float(self.model.predict_proba(df_live)[0][1])
         raw_prob_clipped = float(np.clip(raw_prob, 1e-7, 1.0 - 1e-7))
         
-        # Convert to raw margin logit f = ln(p / (1 - p))
-        f_live = float(np.log(raw_prob_clipped / (1.0 - raw_prob_clipped)))
-        
         calibrated_prob = raw_prob
-        # ponytail: Route through per-session calibrator if it exists
-        if session and hasattr(self, 'session_calibrators') and session in self.session_calibrators:
-            calibrated_prob = float(self.session_calibrators[session].predict_proba([[f_live]])[0][1])
-        # Fallback to global calibrator
-        elif hasattr(self, 'calibrator') and self.calibrator is not None:
-            calibrated_prob = float(self.calibrator.predict_proba([[f_live]])[0][1])
+        if hasattr(self, 'calibrator') and self.calibrator is not None:
+            calibrated_prob = float(self.calibrator.predict([raw_prob_clipped])[0])
             
         if return_raw:
             return calibrated_prob, raw_prob
