@@ -29,12 +29,16 @@ class MonotonicPlattScaler:
             p = np.clip(p, eps, 1 - eps)
             return -np.mean(y_flat * np.log(p) + (1 - y_flat) * np.log(1 - p))
         
-        res = minimize(loss, [1.0, 0.0], bounds=[(0.0, None), (None, None)], method='L-BFGS-B')
+        # ponytail: cap slope a <= 1.2 to prevent steep slope over-amplification & probability inflation
+        res = minimize(loss, [1.0, 0.0], bounds=[(0.0, 1.2), (None, None)], method='L-BFGS-B')
         self.coef_ = float(res.x[0])
         self.intercept_ = float(res.x[1])
         
     def predict_proba(self, X_raw):
         X_flat = np.asarray(X_raw).flatten()
+        if self.coef_ < 0.01:
+            # ponytail: model has zero predictive slope (no signal). Return 0.0 to prevent flatline base-rate trade spam
+            return np.column_stack([np.ones_like(X_flat), np.zeros_like(X_flat)])
         z = self.coef_ * X_flat + self.intercept_
         p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
         return np.column_stack([1 - p, p])
@@ -140,52 +144,56 @@ class LightGBMPredictor:
         X_train, X_test = X.iloc[:split_idx - 120], X.iloc[split_idx:]
         y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
-        # Split training set into sub-train (80%) and calibration (20%)
-        cal_split = int(len(X_train) * 0.8)
-        X_tr, X_cal = X_train.iloc[:cal_split], X_train.iloc[cal_split:]
-        y_tr, y_cal = y_train.iloc[:cal_split], y_train.iloc[cal_split:]
-        # ponytail: keep session tags for per-session calibrator fitting, then drop from features
-        cal_sessions = df.iloc[X_cal.index]['_session'] if '_session' in df.columns else pd.Series(['OTHER'] * len(X_cal))
-
-        print("[*] Melatih model LightGBM & Global True Logit Platt Calibrator (PRD §7)...")
-        # ponytail: read from config so we can tune from one place
-        from core.config import LGBM_ESTIMATORS, LGBM_LEARNING_RATE, LGBM_MAX_DEPTH
-        from sklearn.linear_model import LogisticRegression
-
+        # ponytail: 5-Fold K-Fold Out-Of-Fold Calibration across X_train
+        # Prevents single-contiguous-slice regime shift flatlines (where coef_ collapses to 0.0)
+        from sklearn.model_selection import KFold
+        
         # ponytail: drop internal session columns before training
         internal_cols = ['_wib_hour', '_session', 'hour_utc']
-        X_tr = X_tr.drop(columns=[c for c in internal_cols if c in X_tr.columns], errors='ignore')
-        X_cal = X_cal.drop(columns=[c for c in internal_cols if c in X_cal.columns], errors='ignore')
+        X_train = X_train.drop(columns=[c for c in internal_cols if c in X_train.columns], errors='ignore')
         X_test = X_test.drop(columns=[c for c in internal_cols if c in X_test.columns], errors='ignore')
         
         # Simpan nama fitur AFTER dropping internal cols so count matches model
-        self.feature_names = list(X_tr.columns)
+        self.feature_names = list(X_train.columns)
         
-        # Calculate pos_weight for class imbalance (~34% win minority)
-        n_neg = (y_tr == 0).sum()
-        n_pos = (y_tr == 1).sum()
-        pos_weight = (n_neg / n_pos) if n_pos > 0 else 1.9
+        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        oof_probs = np.zeros(len(X_train))
         
-        self.model = lgb.LGBMClassifier(
-            n_estimators=LGBM_ESTIMATORS,
-            learning_rate=LGBM_LEARNING_RATE,
-            max_depth=LGBM_MAX_DEPTH,
-            scale_pos_weight=pos_weight,
-            random_state=42,
-            verbose=-1
-        )
-        
-        self.model.fit(X_tr, y_tr)
-
-        # Fit Global True Logit Platt Calibration Layer
-        raw_cal_probs = np.clip(self.model.predict_proba(X_cal)[:, 1], 1e-7, 1 - 1e-7)
+        print("[*] Generating 5-Fold Out-Of-Fold predictions for Platt Calibration...")
+        for tr_idx, val_idx in kf.split(X_train):
+            X_tr_f, y_tr_f = X_train.iloc[tr_idx], y_train.iloc[tr_idx]
+            X_va_f = X_train.iloc[val_idx]
+            
+            fold_model = lgb.LGBMClassifier(
+                n_estimators=50,
+                learning_rate=0.03,
+                max_depth=3,
+                min_child_samples=50,
+                scale_pos_weight=1.0,
+                random_state=42,
+                verbose=-1
+            )
+            fold_model.fit(X_tr_f, y_tr_f)
+            oof_probs[val_idx] = fold_model.predict_proba(X_va_f)[:, 1]
+            
+        raw_cal_probs = np.clip(oof_probs, 1e-7, 1 - 1e-7)
         f_cal = np.log(raw_cal_probs / (1.0 - raw_cal_probs))
         
         self.calibrator = MonotonicPlattScaler()
-        self.calibrator.fit(f_cal, y_cal)
+        self.calibrator.fit(f_cal, y_train)
         
-        # ponytail: Disable Per-Session Calibrators. The dataset is too small, 
-        # causing small-N variance to jack up the intercept and blindly output 80% win probs.
+        # Train final LightGBM model on 100% of X_train
+        self.model = lgb.LGBMClassifier(
+            n_estimators=50,
+            learning_rate=0.03,
+            max_depth=3,
+            min_child_samples=50,
+            scale_pos_weight=1.0,
+            random_state=42,
+            verbose=-1
+        )
+        self.model.fit(X_train, y_train)
+        
         self.session_calibrators = {}
 
         # Evaluasi dengan Global True Platt Calibrated probabilities
@@ -272,7 +280,21 @@ class LightGBMPredictor:
         return calibrated_prob
 
     def save_model(self):
-        """Menyimpan model ke disk."""
+        """Menyimpan model ke disk dengan automatic versioned backup."""
+        if os.path.exists(self.model_path):
+            try:
+                import datetime, shutil
+                backup_dir = os.path.join(os.path.dirname(self.model_path), 'backups')
+                os.makedirs(backup_dir, exist_ok=True)
+                old_hash = self.get_model_version_hash()
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_filename = f"{os.path.basename(self.model_path)}.{ts}.{old_hash}.bak"
+                backup_path = os.path.join(backup_dir, backup_filename)
+                shutil.copy(self.model_path, backup_path)
+                print(f"[*] Automatic Backup: Saved previous artifact to {backup_path}")
+            except Exception as e:
+                print(f"[!] Warning: Failed to backup model artifact: {e}")
+
         model_data = {
             'model': self.model,
             'calibrator': getattr(self, 'calibrator', None),
@@ -280,14 +302,19 @@ class LightGBMPredictor:
             'feature_names': self.feature_names
         }
         joblib.dump(model_data, self.model_path)
-        print(f"[*] Model berhasil disimpan di {self.model_path}")
+        self._hash_cache = None  # Reset hash cache to force recalculation
+        self._hash_cache = self.get_model_version_hash()
+        print(f"[*] Model berhasil disimpan di {self.model_path} (Hash: {self._hash_cache})")
 
     def get_model_version_hash(self):
         """PRD v4.0: Returns MD5 hash of the saved .pkl model artifact for live traceability."""
+        if hasattr(self, '_hash_cache') and self._hash_cache:
+            return self._hash_cache
         import hashlib
         if os.path.exists(self.model_path):
             with open(self.model_path, 'rb') as f:
-                return hashlib.md5(f.read()).hexdigest()[:10]
+                self._hash_cache = hashlib.md5(f.read()).hexdigest()[:10]
+                return self._hash_cache
         return "UNINITIALIZED"
 
     def load_model(self):
@@ -299,8 +326,9 @@ class LightGBMPredictor:
                 self.calibrator = model_data.get('calibrator', None)
                 self.session_calibrators = model_data.get('session_calibrators', {})
                 self.feature_names = model_data['feature_names']
+                self._hash_cache = self.get_model_version_hash()
                 sess_count = len(self.session_calibrators)
-                print(f"[*] Model AI (LightGBM + Isotonic Calibrated - {self.direction.upper()} | Hash: {self.get_model_version_hash()} | Session Calibrators: {sess_count}) berhasil dimuat.")
+                print(f"[*] Model AI (LightGBM + Isotonic Calibrated - {self.direction.upper()} | Hash: {self._hash_cache} | Session Calibrators: {sess_count}) berhasil dimuat.")
             except Exception as e:
                 print(f"[!] Gagal memuat model: {e}")
 
