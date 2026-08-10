@@ -1,5 +1,5 @@
 # PRD: MIA v4.0 — LightGBM-Driven XAUUSD Scalping System
-**Status:** Draft for review
+**Status:** Living document (last audit: Aug 10, 2026)
 **Supersedes:** MIA v3.0
 **Author context:** Rebuild informed by v3.0 live/historical diagnostics (BUY model collapse, SELL inverse-calibration finding, label-squashing leak, session-transition losses)
 
@@ -42,8 +42,8 @@ MIA v3.0 proved the core architecture (ZMQ bridge, dual LightGBM engine, Triple 
 
 ```mermaid
 flowchart TD
-    MT5["MetaTrader 4/5 EA"] -->|ZMQ PUB 5557: M1 candles + ticks| ORCH["Python Orchestrator"]
-    ORCH -->|ZMQ PUB 5558: signal + dynamic SL/TP| MT5
+    MT5["MetaTrader 4/5 EA"] -->|ZMQ PUB 5567: M1 candles + ticks| ORCH["Python Orchestrator"]
+    ORCH -->|ZMQ PUB 5568: signal + dynamic SL/TP| MT5
 
     ORCH --> FEAT["Feature Engine"]
     FEAT --> STRUCT["Structural/SMC Module\n(FVG, session sweep — swing-based)"]
@@ -55,12 +55,12 @@ flowchart TD
     ORCH --> EMBARGO["News Embargo (ForexFactory XML)"]
     ORCH --> REGIME["Regime Gate\n(H1 trend filter, volatility bucket, session filter)"]
     ORCH --> ML["Dual LightGBM Engine\n(BUY model | SELL model)\nclass-imbalance aware"]
-    ORCH --> CALIB["Probability Calibration Layer\n(isotonic/Platt, per-direction)"]
+    ORCH --> CALIB["Probability Calibration Layer\n(Isotonic + KFold OOF, per-direction)"]
     ORCH --> RISK["Risk Engine\n(ATR & Swing-based dynamic SL/TP,\nfixed-fractional sizing)"]
     ORCH --> DB[("SQLite (ai_data.db)\nfeatures + labels + model_version + live outcomes")]
 
-    ORCH --> MONITOR["Drift Monitor\n(feature PSI, prediction drift,\nrolling live calibration)"]
-    MONITOR --> RETRAIN["Retrain Pipeline\n(walk-forward, champion/challenger)"]
+    ORCH -.-> MONITOR["Drift Monitor (PLANNED)\n(feature PSI, prediction drift,\nrolling live calibration)"]
+    MONITOR -.-> RETRAIN["Retrain Pipeline (PLANNED)\n(walk-forward, champion/challenger)"]
 ```
 
 Key changes from v3.0: a **Regime Gate** and **Calibration Layer** are now explicit pipeline stages (not buried inside `main_loop.py` as ad hoc thresholds), and a standing **Drift Monitor** feeds a formal **Retrain Pipeline**.
@@ -82,25 +82,30 @@ Key changes from v3.0: a **Regime Gate** and **Calibration Layer** are now expli
 
 | Feature | Category | Formula / Logic | Notes |
 |---|---|---|---|
-| `atr_14` | Volatility | 14-SMA of True Range | Used to normalize nearly everything below |
-| `bb_pctb`, `bb_bw` | Volatility | Standard Bollinger %B / bandwidth | unchanged from v3.0 |
-| `rsi_14` | Momentum | Standard RSI | unchanged |
-| `rsi_divergence` | Momentum | Price lower-low vs RSI higher-low (or inverse) over N bars | **new** — cheap, well-grounded addition |
-| `stoch_k` | Momentum | Standard (14,3,3) | unchanged |
-| `dist_ema_50`, `ema_50_slope` | Momentum | `(Bid-EMA)/ATR`; 5-bar ROC of EMA | changed: now ATR-normalized, not raw-price-normalized |
-| `mom_dist_m5/m15/h1` | Momentum (renamed) | `(Bid - Close_TF)/ATR` | ATR-normalized instead of `/Bid`, and honestly labeled |
-| `has_fvg`, `fvg_dist_atr` | Structural | See §4.1 | HTF (M15) only — M1 FVGs dropped, too noisy per earlier diagnosis |
-| `swept_session_high`, `swept_session_low` | Structural (liquidity sweep) | Binary: price wicks through prior session's H/L and closes back inside within N bars | **new** — the one SMC concept with direct empirical support from the observed London→NY reversal pattern (§7) |
-| `spread_atr_ratio` | Microstructure | current spread / ATR | unchanged, still important for cost filtering |
-| `wick_body_ratio` | Microstructure | (upper+lower wick) / body size, current candle | **new** |
-| `tick_volume` | Microstructure | M1 tick count fetched natively via MT4 `iVolume()` | **new**, replaces tick_velocity proxy |
-| `session` | Time/Regime | categorical: ASIAN/LONDON/OVERLAP | unchanged (22:00 WIB cutoff enforced) |
-| `mins_to_session_transition` | Time/Regime | continuous countdown to next session boundary | **new** — directly targets the session-reversal pattern |
-| `minutes_since_red_folder` | Time/News | minutes elapsed since/until ForexFactory High-impact news (0-999) | **new** — teaches LightGBM post-news volatility dynamics |
-| `hour_utc` | Time | unchanged | |
-| `macro_bias` | Regime | slope-based BULLISH/BEARISH/NEUTRAL flag | unchanged, derived from EMA 50 slope |
-| `volatility_regime` | Regime | categorical bucket from rolling ATR percentile (LOW/NORMAL/HIGH) | **new** — feeds dynamic SL/TP (§6) |
-| `live_prob_buy/sell` | Audit only | model output | **hard rule: never joins the training feature set** (already correctly excluded in v3.0) |
+| `atr` | Volatility | 14-SMA of True Range, floor=0.5, fallback=1.5 | Used for SL/TP sizing. **ATR=0.0 cold-start bug fixed Aug 10.** |
+| `bb_pctb`, `bb_bw` | Volatility | Standard Bollinger %B / bandwidth | ✅ Implemented |
+| `rsi` | Momentum | Standard RSI (14) | ✅ Implemented |
+| `stoch_k` | Momentum | Standard (14,3,3) | ✅ Implemented |
+| `dist_ema_50`, `ema_50_slope` | Momentum | `(Bid-EMA)/Bid`; 5-bar ROC of EMA | ✅ Implemented. ⚠️ Currently `/Bid` not `/ATR` — ATR normalization deferred to v4.1 |
+| `mom_dist_m5/m15/h1` | Momentum (renamed) | `(Bid - Close_TF)/Bid` | ✅ Implemented. ⚠️ Currently `/Bid` not `/ATR` — ATR normalization deferred to v4.1 |
+| `has_fvg`, `fvg_dist_atr` | Structural | See §4.1 | ✅ Implemented |
+| `spread` | Microstructure | Raw bid-ask spread | ✅ Implemented. ⚠️ Not ATR-normalized (PRD originally specified `spread_atr_ratio`) |
+| `wick_body_ratio` | Microstructure | (upper+lower wick) / body size, current candle | ✅ Implemented |
+| `tick_volume` | Microstructure | M1 tick count fetched natively via MT4 `iVolume()` | ✅ Implemented |
+| `session` | Time/Regime | categorical: ASIAN/LONDON/OVERLAP | ✅ Implemented (22:00 WIB cutoff enforced) |
+| `mins_to_session_transition` | Time/Regime | continuous countdown to next session boundary | ✅ Implemented |
+| `macro_bias` | Regime | slope-based BULLISH/BEARISH/NEUTRAL flag | ✅ Implemented, derived from EMA 50 slope |
+| `volatility_regime` | Regime | categorical bucket from ATR thresholds (LOW/NORMAL/HIGH) | ✅ Implemented |
+| `swing_high`, `swing_low` | Structural | 20-bar max/min for dynamic SL placement | ✅ Implemented |
+| `live_prob_buy/sell` | Audit only | model output | **hard rule: never joins the training feature set** ✅ |
+
+#### Deferred to Phase 2 (not yet implemented)
+| Feature | Category | Notes |
+|---|---|---|
+| `rsi_divergence` | Momentum | Price lower-low vs RSI higher-low. Cheap addition but not built yet. |
+| `swept_session_high/low` | Structural (liquidity sweep) | Requires tracking prior session H/L. Key for London→NY reversal pattern. |
+| `minutes_since_red_folder` | Time/News | Would teach LightGBM post-news volatility. News embargo currently binary (trade/don't trade). |
+| `hour_utc` | Time | Extracted in training pipeline but deliberately **dropped** before model training — model uses session-based features instead. |
 
 ### 4.3 SMC features explicitly deferred, not abandoned
 
@@ -146,35 +151,35 @@ Every labeling and validation change must report BUY and SELL metrics **separate
     - `PCT_EQUITY`: Fixed percentage equity risk per trade ($0.5\% - 1.0\%$).
   - Martingale explicitly banned at the architecture level (no lot-scaling-on-loss code path exists anywhere in the system).
 - **Dynamic ATR & Swing-based SL/TP**, replacing static 40/60 pip targets:
-  - `SL = max(15, min(90, max(k_sl × ATR_14, Swing_Boundary_Offset)))` (Removed 30-pip floor to allow small scalp trades).
+  - `SL = max(15, min(90, max(k_sl × ATR, Swing_Boundary_Offset)))` (Removed 30-pip floor to allow small scalp trades).
   - `TP = round(SL * 1.5)` (Strict 1:1.5 RR, no overrides).
   - Uses `get_swing_levels()` (lookback=20) to place SL 2 pips beyond recent Swing High/Low boundaries.
+  - **ATR cold-start guard (Aug 10 fix):** ATR fallback changed from `0.0` to `1.5` with a hard floor of `0.5`. Trades are skipped when `ATR < 0.5` to prevent 0-pip SL/TP after restarts.
   - Directly addresses the v3.0 failure mode: fixed 60-pip TP too far in low vol (timeout decay), fixed 40-pip SL too tight in high vol (Fast SOTW).
-- **Session throttle (22:00 WIB Cutoff)**: Suspend new entries in the **last 60 minutes of OVERLAP session (22:00–23:00 WIB)** to avoid low-liquidity spread bleed that wiped out London profits in v3.0.
+- **Session throttle (22:00 WIB Hard Cutoff)**: All sessions after 22:00 WIB marked `CLOSED` — no trading. 15-minute cooldown at NY Overlap open (19:00–19:15 WIB) to avoid session-transition fakeouts.
 - **News embargo**: unchanged from v3.0 (30m pre / 60m post high-impact ForexFactory events) — this was already correctly identified as a strength.
-- **Regime gate (The Dead Zone Filter)**: The single H1-trend threshold is replaced by an asymmetric, dual-boundary "Dead Zone". Data proves Gold mean-reverts at extreme extremities (e.g. 50% WR at -0.0040 dumps). 
-  - **SELL Danger Zone:** `0.0012 < rel_h1 < 0.0035` (Blocks shorting into normal breakouts; allows shorting parabolic exhaustion).
-  - **BUY Danger Zone:** `-0.0029 < rel_h1 < -0.0018` (Blocks catching normal falling knives; allows buying deep exhaustion bottoms).
+- **Regime gate (H1 Trend Filter)**: Symmetric threshold at `±0.0015` on `rel_h1`. If `rel_h1 < -0.0015`, BUY is zeroed. If `rel_h1 > 0.0015`, SELL is zeroed. *(Note: PRD originally specified asymmetric dual-boundary dead zones — simplified to symmetric threshold based on live performance. Asymmetric version deferred to Phase 2 pending more data.)*
 
 ---
 
 ## 7. Model Architecture
 
 - **Two independent LightGBM binary classifiers** (BUY / SELL) — retained. Rationale unchanged from original design docs: asymmetric market dynamics, independent thresholds, ambiguous-signal handling via "both high confidence → stay flat."
-- **Class imbalance handling added** (`is_unbalance=True` or explicit `scale_pos_weight`) — missing in v3.0 despite a ~34%/66% win/loss split.
-- **Regularization added explicitly**: `min_child_samples`, `num_leaves`, `lambda_l1/l2` all tuned via the same walk-forward harness (currently unset/default in v3.0 — a real overfitting risk given noisy financial labels).
-- **Post-hoc probability calibration layer** (isotonic regression or Platt scaling), fit **separately per direction**, sitting between raw LightGBM output and the live threshold check. This is a direct, structural response to the discovered inverse-calibration finding on SELL and the flat/capped curve on BUY — rather than trusting raw `predict_proba` output as tradeable confidence, it gets recalibrated against actual realized outcomes before being thresholded.
-  - **Known issue (Aug 2026):** Isotonic regression produces flat/degenerate calibration curves because LightGBM raw probabilities cluster in a narrow band (~0.30–0.50). SELL global calibrator maps raw 0.05–0.70 to the same 0.4049; SELL ASIAN has only 2 unique outputs. **Candidate fix:** switch to Platt scaling (LogisticRegression sigmoid), which always produces a smooth monotonic curve even with clustered inputs. Deferred — London session is profitable with the current flat calibrator, so change should be tested during a non-trading window.
-- **Liquidity-sweep and session-transition features feed both models** (not a separate third model yet — see §9 for the deferred regime-classifier idea).
+- **Class imbalance handling:** Currently `scale_pos_weight=1.0` (effectively disabled). *(Note: PRD originally specified `is_unbalance=True` or explicit weight. The `1.0` setting was found to perform adequately with the current dataset. Re-evaluate when dataset grows past 20k rows.)*
+- **Regularization:** `n_estimators=50`, `learning_rate=0.03`, `max_depth=3`, `min_child_samples=50`. *(Note: `num_leaves` and `lambda_l1/l2` are not yet tuned — deferred to Phase 2 hyperparameter search.)*
+- **Post-hoc probability calibration layer: Isotonic Regression + 5-Fold KFold Out-Of-Fold (OOF)**, fit separately per direction, sitting between raw LightGBM output and the live threshold check. This is a direct, structural response to the discovered inverse-calibration finding on SELL and the flat/capped curve on BUY — rather than trusting raw `predict_proba` output as tradeable confidence, it gets recalibrated against actual realized outcomes before being thresholded.
+  - **Calibrator verdict (Aug 10, 2026):** Platt scaling was tested in a parallel codebase (`ai-trading`) and **rejected**. LightGBM `max_depth=3` outputs cluster in a narrow band (~0.35–0.50). Platt fits a sigmoid through this cluster → flat zone → BUY slope collapsed to 0.0 (completely dead). Isotonic's non-parametric step function captures the lumpy miscalibration correctly. Live result: Isotonic +$76 (5/5 wins) vs Platt -$100 (consecutive losses) on the same market day.
+  - Per-session calibrators (`calibrator_london`, `calibrator_ny`, `calibrator_asia`) are architecturally supported but currently **disabled** (`session_calibrators = {}`) due to insufficient per-session sample size. Re-enable at N>500 trades per session.
+- **Session-transition features feed both models** (not a separate third model yet — see §9 for the deferred regime-classifier idea). Liquidity-sweep features (`swept_session_high/low`) are deferred to Phase 2.
 
 ---
 
 ## 8. Validation & Experimentation Discipline
 
-1. **Purged, embargoed walk-forward validation** replaces the static 80/20 split — minimum 4–5 rolling folds, each with an embargo gap (≥2x max label horizon, i.e. ≥120 bars given a 60-bar barrier) between train and test to prevent overlap leakage.
-2. **Champion/challenger deployment**: no retrained model goes live directly. New models run in shadow mode (logged, not traded) against the incumbent for a pre-registered minimum trade count before promotion, with promotion criteria (e.g., calibrated expectancy must exceed champion's by a defined margin) set in advance, not decided post hoc.
+1. **Walk-forward validation (PLANNED — not yet in core training pipeline):** Target is purged, embargoed walk-forward with 4–5 rolling folds, embargo gap ≥120 bars. An offline script (`scripts/walk_forward_validation.py`) exists but is not integrated into `ml_lightgbm.py train()`. The core training pipeline currently uses a **static 80/20 chronological split** (line 140–142 of `ml_lightgbm.py`).
+2. **Champion/challenger deployment (PLANNED — not yet implemented):** Target is shadow mode for new models before promotion. Currently, retrained models go live directly after manual review.
 3. **Calibration-bucket reporting is now a standard, automated part of every model evaluation** (not a one-off diagnostic) — win rate by probability decile, by direction, both on historical and live-shadow data, checked for monotonicity and confidence intervals (not just point estimates — the earlier report over-trusted small-n buckets like n=76).
-4. **Model version logging**: every row in the live prediction/outcome table includes the exact model artifact hash. This closes the "was live and historical evaluation even using the same model" gap that couldn't be ruled out in the v3.0 postmortem.
+4. **Model version logging**: ✅ every row in the live prediction/outcome table includes the exact model artifact hash. This closes the "was live and historical evaluation even using the same model" gap that couldn't be ruled out in the v3.0 postmortem.
 5. **Hyperparameter and threshold search** (`h1_threshold`, probability cutoff, `k_sl`/`k_tp`) via grid or Bayesian search against the walk-forward harness, not hand-tuned during live debugging.
 6. **Feature-level pre-registration**: before any new feature (especially structural/SMC ones) is added to the training set, log its liveness rate and, where applicable, a visual spot-check against charts — this check is now a checklist item in the PR/commit process, not an afterthought.
 
@@ -199,13 +204,15 @@ Fix label collapsing, feature mislabeling/sentinel issues, add dynamic ATR-based
 
 ## 10. Monitoring & Retraining (Live Operations)
 
+> **Implementation status:** Retrain is manual. Drift monitoring and escalation ladder are **PLANNED but not yet implemented.**
+
 - **Retrain cadence**: weekly/bi-weekly rolling-window retrain, each validated through the full walk-forward harness before challenger promotion.
-- **Drift monitoring**, three layers:
+- **Drift monitoring (PLANNED)**, three layers:
   - *Feature drift*: rolling PSI per feature vs. training distribution.
   - *Prediction drift*: rolling distribution of output probabilities per direction (catches indecisive-clustering before P&L shows it).
   - *Performance/concept drift*: rolling realized win rate and expectancy per direction vs. a statistically-bounded control band (not eyeballed).
 - **Escalation ladder** on drift trigger: reduce size → halt new entries (open positions manage out) → full stop + forced re-validation, in that order, never a single-step kill switch.
-- **Full audit logging retained and extended**: every prediction, full feature vector, realized outcome, and model version — this is what made the entire diagnostic process in this document possible, and it stays non-negotiable.
+- **Full audit logging retained and extended**: ✅ every prediction, full feature vector, realized outcome, and model version — this is what made the entire diagnostic process in this document possible, and it stays non-negotiable.
 
 ---
 

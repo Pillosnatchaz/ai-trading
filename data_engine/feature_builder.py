@@ -30,7 +30,8 @@ class FeatureBuilder:
         bb_pctb = bb_pctb_series.iloc[-1] if not bb_pctb_series.empty and pd.notnull(bb_pctb_series.iloc[-1]) else 0.5
 
         atr_series = self.math.get_atr(df['high'], df['low'], df['close'])
-        atr = atr_series.iloc[-1] if not atr_series.empty and pd.notnull(atr_series.iloc[-1]) else 0.0
+        atr = atr_series.iloc[-1] if not atr_series.empty and pd.notnull(atr_series.iloc[-1]) else 1.5
+        atr = max(atr, 0.5)
         
         # FVG distance normalized by ATR (NaN when absent, handled natively by LightGBM)
         if has_fvg and atr > 0:

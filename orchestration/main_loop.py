@@ -15,7 +15,7 @@ import __main__
 __main__.MonotonicPlattScaler = MonotonicPlattScaler
 from core.config import FF_CALENDAR_URL
 
-def main_loop(port=5557):
+def main_loop(port=5567):
     # 1. Setup Konfigurasi
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
@@ -24,7 +24,7 @@ def main_loop(port=5557):
     
     # ponytail: publisher socket to send trades back to MT4
     pub_socket = context.socket(zmq.PUB)
-    pub_socket.bind("tcp://*:5558")
+    pub_socket.bind("tcp://*:5568")
     
     data_buffer = deque(maxlen=100)
     builder = FeatureBuilder()
@@ -212,7 +212,7 @@ def main_loop(port=5557):
                 elif features.get('rel_h1', 0) > h1_threshold:
                     prob_sell = 0.0
 
-                print(f"[*] AI Win Prob -> BUY: {prob_buy * 100:.1f}% (Raw: {raw_buy * 100:.1f}%) | SELL: {prob_sell * 100:.1f}% (Raw: {raw_sell * 100:.1f}%) | Dist EMA: {features['dist_ema_50']:.4f}")
+                print(f"[*] AI Win Prob -> BUY: {prob_buy * 100:.1f}% (Raw: {raw_buy * 100:.1f}%) | SELL: {prob_sell * 100:.1f}% (Raw: {raw_sell * 100:.1f}%) | Dist EMA: {features['dist_ema_50']:.4f} | H1: {features.get('rel_h1', 0):.4f}")
 
                 # Only trade if we are in high priority sessions
                 tradeable_sessions = ["ASIAN", "LONDON", "OVERLAP"]
@@ -243,7 +243,11 @@ def main_loop(port=5557):
                         ask = data.get('ask', 0.0)
                         bid = data.get('bid', 0.0)
                         atr = features.get('atr', 1.5)
+                        if atr < 0.5:
+                            print(f"[!] ATR={atr:.2f} too low — skipping trade to avoid miscalculated SL/TP")
+                            continue
                         
+
                         # ponytail: Dynamic Per-Session ATR SL/TP Scaling
                         # ceiling: these multipliers are empirical from week 1 data, revisit at n=500+ trades per session
                         if current_session == "LONDON":
