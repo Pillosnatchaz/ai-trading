@@ -8,3 +8,4 @@ __pycache__/
 macro_state.json
 temp/
 scratch/
+*.bak
