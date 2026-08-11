@@ -86,8 +86,8 @@ Key changes from v3.0: a **Regime Gate** and **Calibration Layer** are now expli
 | `bb_pctb`, `bb_bw` | Volatility | Standard Bollinger %B / bandwidth | ✅ Implemented |
 | `rsi` | Momentum | Standard RSI (14) | ✅ Implemented |
 | `stoch_k` | Momentum | Standard (14,3,3) | ✅ Implemented |
-| `dist_ema_50`, `ema_50_slope` | Momentum | `(Bid-EMA)/Bid`; 5-bar ROC of EMA | ✅ Implemented. ⚠️ Currently `/Bid` not `/ATR` — ATR normalization deferred to v4.1 |
-| `mom_dist_m5/m15/h1` | Momentum (renamed) | `(Bid - Close_TF)/Bid` | ✅ Implemented. ⚠️ Currently `/Bid` not `/ATR` — ATR normalization deferred to v4.1 |
+| `dist_ema_50`, `ema_50_slope` | Momentum | `(Bid-EMA)/ATR`; 5-bar ROC of EMA | ✅ Implemented. ATR normalization applied Aug 10. |
+| `mom_dist_m5/m15/h1` | Momentum (renamed) | `(Bid - Close_TF)/ATR` | ✅ Implemented. ATR normalization applied Aug 10. |
 | `has_fvg`, `fvg_dist_atr` | Structural | See §4.1 | ✅ Implemented |
 | `spread` | Microstructure | Raw bid-ask spread | ✅ Implemented. ⚠️ Not ATR-normalized (PRD originally specified `spread_atr_ratio`) |
 | `wick_body_ratio` | Microstructure | (upper+lower wick) / body size, current candle | ✅ Implemented |
@@ -157,8 +157,10 @@ Every labeling and validation change must report BUY and SELL metrics **separate
   - **ATR cold-start guard (Aug 10 fix):** ATR fallback changed from `0.0` to `1.5` with a hard floor of `0.5`. Trades are skipped when `ATR < 0.5` to prevent 0-pip SL/TP after restarts.
   - Directly addresses the v3.0 failure mode: fixed 60-pip TP too far in low vol (timeout decay), fixed 40-pip SL too tight in high vol (Fast SOTW).
 - **Session throttle (22:00 WIB Hard Cutoff)**: All sessions after 22:00 WIB marked `CLOSED` — no trading. 15-minute cooldown at NY Overlap open (19:00–19:15 WIB) to avoid session-transition fakeouts.
-- **News embargo**: unchanged from v3.0 (30m pre / 60m post high-impact ForexFactory events) — this was already correctly identified as a strength.
-- **Regime gate (H1 Trend Filter)**: Symmetric threshold at `±0.0015` on `rel_h1`. If `rel_h1 < -0.0015`, BUY is zeroed. If `rel_h1 > 0.0015`, SELL is zeroed. *(Note: PRD originally specified asymmetric dual-boundary dead zones — simplified to symmetric threshold based on live performance. Asymmetric version deferred to Phase 2 pending more data.)*
+- **News embargo**: unchanged from v3.0 (30m pre / 60m post high-impact ForexFactory events). `Holiday` impact events are deliberately ignored to prevent freezing the bot during low-volume sessions; the bot relies on its internal volatility features (`atr`, `tick_volume`) to handle slow markets natively.
+- **Regime gate (H1 Trend Filter)**: Uses a data-backed asymmetric "Dead Zone" based on ATR-normalized `rel_h1` distance:
+  - **SELL Danger Zone:** `1.5 < rel_h1 < 9.0` (Blocks shorting into a strong, unexhausted pump).
+  - **BUY Danger Zone:** `rel_h1 < -9.5` (Blocks catching a deep falling knife).
 
 ---
 
@@ -167,7 +169,7 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 - **Two independent LightGBM binary classifiers** (BUY / SELL) — retained. Rationale unchanged from original design docs: asymmetric market dynamics, independent thresholds, ambiguous-signal handling via "both high confidence → stay flat."
 - **Class imbalance handling:** Currently `scale_pos_weight=1.0` (effectively disabled). *(Note: PRD originally specified `is_unbalance=True` or explicit weight. The `1.0` setting was found to perform adequately with the current dataset. Re-evaluate when dataset grows past 20k rows.)*
 - **Regularization:** `n_estimators=50`, `learning_rate=0.03`, `max_depth=3`, `min_child_samples=50`. *(Note: `num_leaves` and `lambda_l1/l2` are not yet tuned — deferred to Phase 2 hyperparameter search.)*
-- **Post-hoc probability calibration layer: Isotonic Regression + 5-Fold KFold Out-Of-Fold (OOF)**, fit separately per direction, sitting between raw LightGBM output and the live threshold check. This is a direct, structural response to the discovered inverse-calibration finding on SELL and the flat/capped curve on BUY — rather than trusting raw `predict_proba` output as tradeable confidence, it gets recalibrated against actual realized outcomes before being thresholded.
+- **Post-hoc probability calibration layer: Isotonic Regression + 5-Fold TimeSeriesSplit Out-Of-Fold (OOF)**, fit separately per direction, sitting between raw LightGBM output and the live threshold check. This is a direct, structural response to the discovered inverse-calibration finding on SELL and the flat/capped curve on BUY — rather than trusting raw `predict_proba` output as tradeable confidence, it gets recalibrated against actual realized outcomes before being thresholded. (Updated Aug 11: Switched from random KFold to TimeSeriesSplit to fix chronological data leakage during OOF generation).
   - **Calibrator verdict (Aug 10, 2026):** Platt scaling was tested in a parallel codebase (`ai-trading`) and **rejected**. LightGBM `max_depth=3` outputs cluster in a narrow band (~0.35–0.50). Platt fits a sigmoid through this cluster → flat zone → BUY slope collapsed to 0.0 (completely dead). Isotonic's non-parametric step function captures the lumpy miscalibration correctly. Live result: Isotonic +$76 (5/5 wins) vs Platt -$100 (consecutive losses) on the same market day.
   - Per-session calibrators (`calibrator_london`, `calibrator_ny`, `calibrator_asia`) are architecturally supported but currently **disabled** (`session_calibrators = {}`) due to insufficient per-session sample size. Re-enable at N>500 trades per session.
 - **Session-transition features feed both models** (not a separate third model yet — see §9 for the deferred regime-classifier idea). Liquidity-sweep features (`swept_session_high/low`) are deferred to Phase 2.
@@ -176,7 +178,7 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 
 ## 8. Validation & Experimentation Discipline
 
-1. **Walk-forward validation (PLANNED — not yet in core training pipeline):** Target is purged, embargoed walk-forward with 4–5 rolling folds, embargo gap ≥120 bars. An offline script (`scripts/walk_forward_validation.py`) exists but is not integrated into `ml_lightgbm.py train()`. The core training pipeline currently uses a **static 80/20 chronological split** (line 140–142 of `ml_lightgbm.py`).
+1. **Walk-forward validation:** ✅ **Implemented for Calibration.** The probability calibrator uses 5-Fold `TimeSeriesSplit` to generate Out-Of-Fold predictions, ensuring it never uses future data to predict past folds. The final holdout evaluation still uses a static 80/20 chronological split with a 120-bar embargo gap (line 140–142 of `ml_lightgbm.py`).
 2. **Champion/challenger deployment (PLANNED — not yet implemented):** Target is shadow mode for new models before promotion. Currently, retrained models go live directly after manual review.
 3. **Calibration-bucket reporting is now a standard, automated part of every model evaluation** (not a one-off diagnostic) — win rate by probability decile, by direction, both on historical and live-shadow data, checked for monotonicity and confidence intervals (not just point estimates — the earlier report over-trusted small-n buckets like n=76).
 4. **Model version logging**: ✅ every row in the live prediction/outcome table includes the exact model artifact hash. This closes the "was live and historical evaluation even using the same model" gap that couldn't be ruled out in the v3.0 postmortem.
