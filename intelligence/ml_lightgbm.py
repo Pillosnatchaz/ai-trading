@@ -142,8 +142,8 @@ class LightGBMPredictor:
         y_train, y_test = y.iloc[:split_idx - 120], y.iloc[split_idx:]
 
         # ponytail: 5-Fold K-Fold Out-Of-Fold Calibration across X_train
-        # Prevents single-contiguous-slice regime shift flatlines
-        from sklearn.model_selection import KFold
+        # Prevents single-contiguous-slice regime shift flatlines and future-leakage
+        from sklearn.model_selection import TimeSeriesSplit
         from sklearn.isotonic import IsotonicRegression
         
         # ponytail: drop internal session columns before training
@@ -154,7 +154,7 @@ class LightGBMPredictor:
         # Simpan nama fitur AFTER dropping internal cols so count matches model
         self.feature_names = list(X_train.columns)
         
-        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        kf = TimeSeriesSplit(n_splits=5)
         oof_probs = np.zeros(len(X_train))
         
         print("[*] Generating 5-Fold Out-Of-Fold predictions for Isotonic Calibration...")
