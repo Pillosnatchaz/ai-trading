@@ -41,10 +41,14 @@ print(f"Mode: {'DRY RUN (preview only)' if DRY_RUN else 'APPLY (will modify DB)'
 print(f"Fields: {FIELDS_TO_MIGRATE}")
 print()
 
-# ponytail: back up before touching anything
+# ponytail: back up to backups/YYYY-MM-DD/ before touching anything
 if not DRY_RUN:
-    backup_path = DB_PATH + ".bak_before_atr_norm"
-    if not Path(backup_path).exists():
+    from datetime import date
+    db_dir = Path(DB_PATH).parent
+    backup_dir = db_dir / "backups" / date.today().isoformat()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / (Path(DB_PATH).name + ".bak_before_atr_norm")
+    if not backup_path.exists():
         shutil.copy2(DB_PATH, backup_path)
         print(f"Backup saved: {backup_path}")
     else:
@@ -145,8 +149,6 @@ if preview_samples:
             print(f"    {field}: {change}")
 
 if DRY_RUN:
-    print(f"\n⚠️  DRY RUN — no changes written. Run with --apply to execute.")
+    print("\n[!] DRY RUN -- no changes written. Run with --apply to execute.")
 else:
-    print(f"\n✅ Migration complete. Now:")
-    print(f"   1. Update feature_builder.py (change /last_bid to /atr)")
-    print(f"   2. Retrain models")
+    print("\n[OK] Migration complete. Now retrain models.")

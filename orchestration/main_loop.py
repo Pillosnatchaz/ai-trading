@@ -126,7 +126,7 @@ def main_loop(port=5567):
                             for event in root.findall('.//event'):
                                 impact = event.findtext('impact', '').strip()
                                 country = event.findtext('country', '').strip()
-                                if impact not in ('High', 'Medium', 'Holiday') or country not in ('USD', 'EUR', 'JPY', 'CNY', 'GBP'):
+                                if impact not in ('High', 'Medium') or country not in ('USD', 'EUR', 'JPY', 'CNY', 'GBP'):
                                     continue
                                 date_str = event.findtext('date', '').strip()
                                 time_str = event.findtext('time', '').strip()
@@ -145,7 +145,7 @@ def main_loop(port=5567):
 
                     for event_dt, title, impact in cached_red_events:
                         mins_diff = (event_dt - now).total_seconds() / 60.0
-                        embargo_before, embargo_after = (-30, 60) if impact in ('High', 'Holiday') else (-15, 15)
+                        embargo_before, embargo_after = (-30, 60) if impact == 'High' else (-15, 15)
                         
                         if embargo_before <= mins_diff <= embargo_after:
                             print(f"[!] {impact.upper()} IMPACT NEWS EMBARGO: {title} ({mins_diff:+.0f}min)")
@@ -205,12 +205,14 @@ def main_loop(port=5567):
                     model_version_hash=active_hash
                 )
                 
-                # ponytail: softened H1 trend filter. Only block when trend is strong (>0.15% from H1 close).
-                h1_threshold = 0.0015
-                if features.get('rel_h1', 0) < -h1_threshold:
-                    prob_buy = 0.0
-                elif features.get('rel_h1', 0) > h1_threshold:
+                # ponytail: Asymmetric H1 Dead Zone (ATR-normalized)
+                # SELL Danger Zone: between 1.5 and 9.0 ATRs (shorting into a strong, but not yet exhausted pump)
+                # BUY Danger Zone: deeper than 9.5 ATRs (catching a falling knife)
+                rel_h1 = features.get('rel_h1', 0)
+                if 1.5 < rel_h1 < 9.0:
                     prob_sell = 0.0
+                if rel_h1 < -9.5:
+                    prob_buy = 0.0
 
                 print(f"[*] AI Win Prob -> BUY: {prob_buy * 100:.1f}% (Raw: {raw_buy * 100:.1f}%) | SELL: {prob_sell * 100:.1f}% (Raw: {raw_sell * 100:.1f}%) | Dist EMA: {features['dist_ema_50']:.4f} | H1: {features.get('rel_h1', 0):.4f}")
 

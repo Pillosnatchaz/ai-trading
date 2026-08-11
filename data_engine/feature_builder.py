@@ -54,10 +54,10 @@ class FeatureBuilder:
         future_boundaries = [b - current_minutes for b in session_boundaries if b > current_minutes]
         mins_to_session_transition = min(future_boundaries) if len(future_boundaries) > 0 else 999.0
 
-        # Distance features
-        mom_dist_m5 = (last_bid - df['m5_close'].iloc[-1]) / last_bid if pd.notnull(df['m5_close'].iloc[-1]) else 0
-        mom_dist_m15 = (last_bid - df['m15_close'].iloc[-1]) / last_bid if pd.notnull(df['m15_close'].iloc[-1]) else 0
-        mom_dist_h1 = (last_bid - df['h1_close'].iloc[-1]) / last_bid if pd.notnull(df['h1_close'].iloc[-1]) else 0
+        # Distance features (ATR-normalized per PRD v4.0)
+        mom_dist_m5 = (last_bid - df['m5_close'].iloc[-1]) / atr if pd.notnull(df['m5_close'].iloc[-1]) else 0
+        mom_dist_m15 = (last_bid - df['m15_close'].iloc[-1]) / atr if pd.notnull(df['m15_close'].iloc[-1]) else 0
+        mom_dist_h1 = (last_bid - df['h1_close'].iloc[-1]) / atr if pd.notnull(df['h1_close'].iloc[-1]) else 0
 
         # Microstructure features
         last_open = df['open'].iloc[-1]
@@ -85,7 +85,7 @@ class FeatureBuilder:
         # Combine all features
         features = {
             # Trend & Momentum Distance
-            'dist_ema_50': (last_bid - ema_50_current) / last_bid if last_bid != 0 else 0,
+            'dist_ema_50': (last_bid - ema_50_current) / atr,  # ponytail: atr always >= 0.5 from floor above
             'ema_50_slope': ema_50_slope,
             'mom_dist_m5': mom_dist_m5,
             'mom_dist_m15': mom_dist_m15,
