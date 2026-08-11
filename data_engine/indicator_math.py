@@ -105,3 +105,18 @@ class IndicatorMath:
                 '705': high - (diff * 0.705),
                 '79': high - (diff * 0.79)
             }
+
+    @staticmethod
+    def get_swing_levels(df, lookback=20):
+        """
+        PRD v4.0: Computes multi-candle structural Swing High (max) and Swing Low (min)
+        over the specified lookback window for dynamic SL/TP and position sizing.
+        """
+        if len(df) < lookback:
+            sub = df
+        else:
+            sub = df.iloc[-lookback:]
+            
+        swing_high = sub['high'].max()
+        swing_low = sub['low'].min()
+        return swing_high, swing_low

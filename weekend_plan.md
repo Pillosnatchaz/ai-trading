@@ -1,155 +1,114 @@
-**Ponytail: Weekend Sprint DONE. Here's the summary.**
-
-### What was built:
-
-| Task | Status | What Changed |
-|------|--------|-------------|
-| **1. Triple Barrier OHLC Fix** | Γ£à | `triple_barrier.py` now uses High/Low for pessimistic SL/TP checking |
-| **2. Grid Search** | Γ£à | `optimize_sltp.py` created ΓÇö tested 7 SL/TP combos. Winner: 1:2 ratio |
-| **3. DB Schema** | Γ£à | `database.py` + `main_loop.py` now save High/Low per candle |
-| **4. News Embargo** | Γ£à | `llm_macro_agents.py` checks ForexFactory for Red Folder events |
-| **5. Embargo Gate** | Γ£à | `main_loop.py` blocks all trades when `news_embargo == true` |
-| **6. Stale Data Protection** | Γ£à | If `macro_state.json` is >60 min old, forces `NEUTRAL` |
-| **7. ML Integration** | Γ£à | `macro_bias` encoded as -1/0/1 and fed to LightGBM |
-| **8. Model Retrained** | Γ£à | BUY: 67% acc, SELL: 58% acc (now with macro_bias feature) |
-
-### Monday Checklist:
-1. Start `main_loop.py` ΓÇö it will now save OHLC data and use the new models
-2. Start `llm_macro_agents.py` ΓÇö make sure Ollama is running first
-3. Let it collect data all day, then re-run `optimize_sltp.py` Monday night with real OHLC data
-
-==============================
-
-# 📉 The Lazy Senior Dev Weekend Plan (Updated July 10)
-
-## Saturday Morning: Fix the Backtest Engine
-
-### 1. Fix `triple_barrier.py` — Use High/Low, Not Close
-The current labeler only checks M1 Close prices. In real life, price can hit your SL mid-candle and bounce back by close. This makes the backtest optimistic and unreliable.
-- **Fix:** Check High and Low of each M1 candle against SL/TP thresholds.
-- **Pessimistic Rule:** If both SL and TP are breached in the same candle, assume SL hit first (worst case).
-- **Why:** If a setup survives this pessimistic test, it's bulletproof for live trading.
-
-### 2. Run the SL/TP Grid Search (`optimize_sltp.py`)
-Using the fixed `triple_barrier.py`, simulate multiple SL/TP setups against the same historical data:
-- 30 SL / 45 TP (Current baseline)
-- 20 SL / 30 TP (Tight 1:1.5)
-- 30 SL / 60 TP (1:2 ratio)
-- 40 SL / 60 TP (Wide 1:1.5)
-
-Output a scoreboard: Win Rate, Net Profit, and SOTW count for each setup. Pick the winner.
-
-### 3. Retrain the ML Models
-After picking the best SL/TP from the grid search, re-run `run_labeler.py` with the winning ratio and retrain both BUY and SELL models.
+# 📉 The Lazy Senior Dev Weekend Plan
 
 ---
 
-## Saturday Afternoon: Wire Up the LLM
-
-### 4. Isolate the LLM (Phase 5)
-Build and test `intelligence/llm_macro_agents.py`.
-- **Task 1 (Sentiment):** Pull an RSS feed (e.g., ForexFactory), send to Ollama (DeepSeek), get Bullish/Bearish bias.
-- **Task 2 (News Brake):** Have Ollama flag `news_embargo: true` if there is a Red Folder event (CPI, NFP, FOMC) within 30 minutes.
-- **Task 3 (Gatekeeper Update):** Update `main_loop.py` to `continue` (skip trading) if `news_embargo == true` to survive whipsaws.
-- **Task 4 (ML Integration):** In `ml_lightgbm.py`, encode the strings: `df['macro_bias'] = df['macro_bias'].map({'BEARISH': -1, 'NEUTRAL': 0, 'BULLISH': 1})` and remove it from the `drop` list.
-- **Task 5 (Stale Data Protection):** In `feature_builder.py`, check the modified time of `macro_state.json`. If older than 60 mins (Ollama dead/off), forcefully overwrite `macro_bias` to `NEUTRAL` to prevent ghost signals.
-
----
-
-## Sunday: Validate & Deploy
-
-### 5. The Monday Execution
-Before leaving for work on Monday, start two separate processes:
-1. `main_loop.py` (Fast tick data collection)
-2. `llm_macro_agents.py` on a 15-minute cron/loop (Slow macro sentiment collection)
-
-By Monday night, you will have a clean dataset of technical features and a synchronized log of LLM macro decisions.
+### 1. Completed & Verified System Upgrades (MIA v4.0 Engine)
+- [x] **Triple Barrier High/Low Labeling:** `data_engine/triple_barrier.py` checks M1 High/Low for pessimistic SL/TP evaluation.
+- [x] **Candle-Based Macro Bias:** `main_loop.py` derives macro trend directly from `ema_50_slope` (no LLM, no RSS, zero latency).
+- [x] **Indicator Warmup Cold-Start Fix:** Historical startup candles warm up EMA/RSI buffers immediately without trading on old bars.
+- [x] **22:00 WIB Late-Session Cutoff:** Hard cutoff enforced in `main_loop.py` to stop late-night spread bleed.
+- [x] **Minute-Level Snapshot Deduplication:** SQL window functions enforce 1 clean row per M1 candle close, eliminating time-horizon distortions.
+- [x] **Database Lock & Single Position Guard:** Added `timeout=30.0` and 180s trade cooldown to prevent position stacking.
+- [x] **30-Minute News Calendar Caching:** In-memory schedule caching fetches ForexFactory XML at most twice per hour to prevent HTTP 429 rate limits.
 
 ---
 
-## Rules
-- **Zero UI.** The bot runs headless. No dashboards.
-- **No Asian Session.** London + Overlap only until we build a dedicated Asian model.
-- **No M30 features.** M15 + H1 already cover it. Don't touch the MT4 bridge.
-- **Keep macro_bias as 3 states only.** BULL / NEUTRAL / BEAR. LightGBM calculates intensity from technicals.
+### 2. Pipeline Audit & Feature Engineering Sprint
+- [x] **Fix Label Squashing in `ml_lightgbm.py`:**
+  - Filter out `-2 (Fast SOTW)` rows during training so model learns clean wins (`+1`) vs clean losses (`-1`).
+- [x] **Add Class Imbalance Handling (`scale_pos_weight`):**
+  - Pass `scale_pos_weight = 1.9` in `LGBMClassifier` so trees weight winning setups equally.
+- [x] **Fix FVG Feature (`dist_to_fvg = 9999`):**
+  - Split into `has_fvg` (1/0 binary) and `dist_to_fvg` (`np.nan` when no active FVG exists) to eliminate arbitrary `9999` split distortion.
+- [ ] **Fix Missing ATR Normalization in `feature_builder.py`:**
+  - `mom_dist_m5/m15/h1` and `dist_ema_50` were documented in PRD to divide by `ATR`, but code still divides by `last_bid`. Must update formula and regenerate entire historical feature set for v4.1.
 
 ---
 
-## Monday Night (Post-Market) Tasks
-1. Stop the bot.
-2. Open `optimize_sltp.py`.
-3. Change line 15 back to:
-   `df = pd.read_sql_query("SELECT price, high, low FROM snapshots WHERE high IS NOT NULL ORDER BY id ASC", conn)`
-4. Run `py optimize_sltp.py`. This will now ONLY run on the flawless OHLC data collected on Monday.
-5. Review the scoreboard and make the final decision on the static SL/TP ratio before we start building the Dynamic ATR SL/TP logic on Tuesday.
+### 3. Session-Specific Middle-Ground Architecture (Current 8.9k Rows)
+- [x] **Global LightGBM Trees + Per-Session Isotonic Calibrators:**
+  - Keep 2 global LightGBM models (`model_buy` & `model_sell`) trained on full 8,900+ dataset to prevent data starvation (~800 rows per session split).
+  - Fit **separate Isotonic Calibrators per session** (`calibrator_london`, `calibrator_ny`, `calibrator_asia`) so probabilities calibrate accurately to session-specific win rates without starving base trees of data.
+- [x] **Statistical Discipline Guard (Sample Size Rule):**
+  - **Rule:** Do NOT alter live probability thresholds based on small-$n$ single-week buckets ($n < 100$). Accumulate bucket data until each bin hits $n \ge 100+$.
+  - **Cross-Tab Finding:** Cross-tab audit proved the `0.45 - 0.50` SELL bucket achieved **51.1% WR (+ $138.89 P&L)** in London, but dropped to **35.7% WR (- $30.08 P&L)** in NY Overlap. NY drag is session/ATR driven, NOT a threshold flaw.
+- [x] **Dynamic Per-Session SL/TP Scaling (ATR Multipliers):**
+  - Adjust SL/TP ATR multipliers in `main_loop.py` based on active session volatility:
+    - **London:** 1.3x ATR SL / 2.0x ATR TP (35 / 55 pips).
+    - **NY Overlap:** 2.0x ATR SL / 3.0x ATR TP (60 / 90 pips — stops US news noise from suffocating trades).
+    - **Asia:** 1.0x ATR SL / 1.5x ATR TP (20 / 30 pips — tight range scalps).
+- [x] **Monday Asian SELL-Only Rule (08:00 – 12:00 WIB):**
+  - Empirical audit of 468 snapshots proved Monday Asian SELL win rate is **48.46%** (+EV winner), while BUY win rate is **18.05%** (drag trap).
+  - Implementation in `main_loop.py`: Enable `MONDAY_ASIA` session for SELL signals only (force `prob_buy = 0.0`).
+- [x] **15-Minute London Open Cooldown (14:00 – 14:15 WIB):**
+  - Empirical WIB audit proved 14:00 WIB London opening spike causes initial fakeout losses (11 losses / 3 wins).
+  - Implementation in `main_loop.py`: Pause trade entries from 14:00 to 14:15 WIB to let London's opening candle range settle before entering.
+
+* **Long-Term Roadmap (Phase 3 @ 50k+ Rows):** Once database reaches 50,000+ clean snapshots, run `walk_forward_validation.py` to evaluate dedicated per-session models (`model_london`, `model_ny`, `model_asia`).
 
 ---
 
-## Friday Night (Post-Market) Tasks — Dynamic SL/TP Build
-**Prerequisite:** DB must have 4,000+ rows of clean OHLC data.
+### 4. LLM & Local AI Agent Experiments (Ollama / DeepSeek)
+- [x] **LLM Post-Mortem Trade Diagnostician (`intelligence/llm_trade_auditor.py`):**
+  - Triggered on trade loss: sends trade features, entry/exit prices, and candle snippet to local Ollama (`deepseek-r1`).
+  - Classifies root cause (`COUNTER_TREND_FAKEOUT`, `SPREAD_EXPANSION`, `NEWS_WHIPSAW`) and saves diagnosis to `live_trades` DB.
+- [x] **LLM Weekly Performance Summarizer (`scripts/llm_weekly_report.py`):**
+  - Runs Friday night: queries `live_trades` and `snapshots` for the week (Win Rate, P&L, London vs NY metrics, hourly stats).
+  - Passes aggregated data to Ollama to generate an executive Markdown report in `reports/weekly_summary_YYYY_MM_DD.md`.
 
-### 1. Restore ML Power
-- In `config.py`, set `LGBM_MAX_DEPTH = 5` and `LGBM_ESTIMATORS = 100`.
-- Backup current `.pkl` files first!
-- Run `run_labeler.py` then retrain both BUY and SELL models.
+---
 
-### 2. Build Dynamic SL/TP Engine (Fibonacci OTE + ATR)
-- Calculate M15/H1 swing highs and swing lows from the data bridge.
-- Use Fibonacci extensions (-27.2%, -61.8%) on those swings to set dynamic TP targets.
-- Use ATR to set dynamic SL (e.g., `SL = ATR * 1.5`, minimum 20 pips).
-- Enforce minimum 1:1.5 Risk/Reward ratio (if Fib TP < SL * 1.5, skip the trade).
+### 5. 🔴 Critical: ATR=0.0 Restart Bug & Calibrator Verdict (Aug 10 Forensic)
 
-### 3. Backtest Dynamic vs Static
-- Upgrade `optimize_sltp.py` to simulate dynamic Fibonacci TP alongside the static setups.
-- Compare Net$/100 to see if dynamic beats the 40/60 winner.
-- Only deploy to live if dynamic wins the scoreboard.
+#### Bug: `data_buffer` Wipe on Restart → 14min Blind Trading Window
+- **Root Cause:** `data_buffer = deque(maxlen=100)` in `main_loop.py` has NO persistence. Every restart wipes all candle history.
+- **Impact:** ATR needs 14 candles (14min) to compute. During those 14 minutes after any restart:
+  - `ATR = 0.0`, `BB_BW = 0.0`, `RSI = 50.0` (fake neutral), `Stoch = 50.0` (fake neutral)
+  - SL/TP calculation uses garbage values → trades get stopped out instantly
+  - Model predicts with completely fake indicator features
+- **Evidence (Aug 10, `ai-trading` Platt DB):** 3 mid-session restarts at 14:06, 14:37, 14:50 WIB. 479 total ATR=0 snapshots across all days (2.2% of all data). All 5 losing trades (-$55 total) fired during ATR=0 windows.
+- **Exists in BOTH codebases** (`ai-trading` AND `ai-trading-iso`).
 
-### 4. News-Aware ML Feature
-- Add `minutes_since_red_folder` as a feature in `main_loop.py` (save to features_json).
-- Calculated from the inline embargo check already in main_loop.py.
-- Values: 0-999 (0 = news happening now, 60 = 1 hour after, 999 = no news today).
-- This teaches LightGBM that trading 5 min after CPI is fundamentally different from trading 2 hours later.
-- The ML learns post-news behavior instead of relying on a hard 60-min brake.
+#### Fix Plan (Priority Order):
+- [ ] **Fix A — ATR Floor (Quick, both codebases):**
+  - `feature_builder.py` line 33: Change fallback from `0.0` to `1.5`, add `max(atr, 0.5)` floor.
+  - `main_loop.py`: Skip trades when `ATR < 0.5` → `"ATR too low, skipping trade"`
+- [ ] **Fix B — Buffer Persistence (Proper fix):**
+  - On shutdown: serialize `data_buffer` to disk (e.g. `buffer_state.pkl` or SQLite).
+  - On startup: reload last buffer state so indicators resume warm without 14min gap.
+  - Alternative: request last 100 M1 candles from MT4 EA on startup (EA-side change).
+- [ ] **Fix C — ATR Normalization (from §2, still pending):**
+  - `mom_dist_m5/m15/h1` and `dist_ema_50` divide by `last_bid` → should divide by `ATR` per PRD.
+  - Requires regenerating historical features and retraining. Target: v4.1.
 
-### 5. Kill LLM Macro Bias — Replace with Candle-Based Bias
-**Rationale:** The LLM reads news headlines and hallucinates a bias. Candles don't lie.
+#### Calibrator Verdict: Isotonic > Platt for LightGBM Scalping
+- **Platt (sigmoid) failure mode:** LightGBM `max_depth=3` outputs ~20-30 clustered raw probs in a narrow band (0.35-0.50). Platt fits a sigmoid through this narrow cluster → flat zone → only ~5 discrete output values. BUY `coef_` collapsed to 0.0 → BUY completely dead → bot could only SELL into rallies.
+- **Isotonic success:** Non-parametric step function captures LightGBM's lumpy miscalibration. Stair-step at 52.96% correctly identified bullish edge → 5/5 wins (+$76).
+- **Decision:** Use **Isotonic + 5-Fold KFold OOF** as the production calibrator (`ai-trading-iso`). Deprecate Platt branch.
+- **Exception:** If per-session calibrators are re-enabled in future (at N>500/session), use Platt per-session (2-param stability at small N) with Isotonic global.
 
-**New architecture:**
-| Component | Source | Purpose |
-|-----------|--------|---------|
-| `macro_bias` | EMA 50/200 cross from collected candles | BULLISH/BEARISH/NEUTRAL direction |
-| `news_impact` | FF calendar `<impact>` tag | ML feature (0=none, 1=low, 2=medium, 3=high) |
-| `news_embargo` | FF calendar + time math | Hard brake for High impact events |
+---
 
-**Delete:**
-- Ollama / DeepSeek dependency (no more local LLM needed for trading)
-- RSS headline fetching from ForexLive/Yahoo
-- `macro_state.json` file
-- LLM prompt engineering in `llm_macro_agents.py`
+### 6. PRD.md Audit: Mismatches with Isotonic Codebase (Aug 10)
 
-**Keep in `llm_macro_agents.py`:**
-- `check_news_embargo()` function (but it's now also inline in main_loop.py)
-- Or delete the file entirely and keep everything inline
+#### 🔴 PRD Says Wrong Things (must fix)
+- [ ] **§7 Calibrator recommendation is wrong:** PRD says *"switch to Platt scaling"* — live testing proved Platt collapses on LightGBM. Replace with Isotonic + KFold OOF verdict.
+- [ ] **§3 ZMQ ports wrong:** PRD says `5557/5558`, code uses `5567/5568`.
+- [ ] **§7 `scale_pos_weight`:** PRD says `is_unbalance=True` or explicit weight. Code hardcodes `1.0` (no imbalance handling). Document whether this is deliberate or a regression.
 
-### 6. Fix Indicator Warmup (Cold Start Bug)
-**Problem:** MT4 sends 100 historical candles on startup for indicator warmup, but `candle_age_seconds > 120` filter throws them ALL away (including from the indicator buffer). After a restart, RSI/Stochastic/EMA are garbage until 50+ live candles arrive.
-**Fix:** Use old candles for indicator buffer warmup but skip DB save and trading:
-```python
-if candle_age_seconds > 120:
-    price_buffer.append(candle_data)  # warm up indicators
-    last_candle_id = current_candle_id
-    continue  # don't save to DB or trade
-```
+#### 🟡 PRD Describes Unimplemented Features (mark as deferred)
+- [ ] **§4.2 features never built:** `rsi_divergence`, `swept_session_high/low`, `minutes_since_red_folder` — move to Phase 2 in PRD.
+- [ ] **§4.2 `spread_atr_ratio`:** PRD says `spread/ATR`. Code outputs raw spread. Either fix code or fix PRD.
+- [ ] **§4.2 `hour_utc`:** PRD lists as training feature. Code deliberately drops it before training. Note this in PRD.
+- [ ] **§6 Asymmetric Dead Zone:** PRD specifies dual-boundary ranges (SELL: `0.0012-0.0035`, BUY: `-0.0029 to -0.0018`). Code uses simple symmetric `±0.0015`. Either implement or update PRD.
 
-### 7. Model Calibration & Pipeline Audit Upgrades (July 24 Empirical Audit)
-**Rationale:** Database audit of 5,804 rows & live trade logs proved probability calibration collapse.
+#### 🟡 PRD Describes Unimplemented Infrastructure (mark as planned)
+- [ ] **§8 Walk-forward validation:** PRD says 4-5 fold purged walk-forward replaces static split. Code still uses 80/20 static split in `train()`. Offline `walk_forward_validation.py` exists but isn't integrated.
+- [ ] **§8 Champion/challenger shadow mode:** Not implemented anywhere.
+- [ ] **§10 Drift monitoring (PSI, prediction drift, performance drift):** Not implemented anywhere.
 
-- [ ] **Fix Label Squashing in `ml_lightgbm.py`:**
-  - Currently `1 if label == 1 else 0` squashes 28% Fast SOTW (`-2`) noise stops into clean losses (`0`), ruining probability calibration.
-  - Fix: Filter out `-2 (Fast SOTW)` rows during training so model learns clean wins (`+1`) vs clean losses (`-1`).
-- [ ] **Add Class Imbalance Handling (`scale_pos_weight`):**
-  - Raw win rate is ~34% (minority class). Pass `scale_pos_weight = 1.9` in `LGBMClassifier` so trees treat winning setups with equal weight.
-- [ ] **Fix FVG Feature (`dist_to_fvg = 9999`):**
-  - In `feature_builder.py`, split into `has_fvg` (1/0 binary) and `dist_to_fvg` (`np.nan` when no active FVG exists) to eliminate arbitrary `9999` split distortion.
-- [ ] **Enforce 22:00 WIB Late-Session Cutoff:**
-  - In `main_loop.py`, cut session end from 23:00 to 22:00 WIB to avoid low-liquidity late-night spread bleed.
+#### ⚠️ weekend_plan.md Internal Inconsistencies
+- [ ] **§2 `scale_pos_weight = 1.9`:** Marked `[x]` done, but code uses `1.0`. Either the plan is outdated or the code regressed.
+- [ ] **§3 Per-Session Isotonic Calibrators:** Marked `[x]` done, but code has `session_calibrators = {}` (disabled). Update to reflect current state.
+- [ ] **§3 Monday Asian SELL-Only / London Cooldown:** Marked `[x]` but not visible in isotonic `main_loop.py`. May only exist in Platt branch — verify and port if needed.
+

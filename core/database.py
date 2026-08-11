@@ -8,9 +8,13 @@ class DatabaseManager:
         self.db_path = os.path.join(os.path.dirname(script_dir), db_filename)
         self.create_tables()
 
+    def _get_conn(self):
+        """Helper to get SQLite connection with busy timeout to prevent database locks."""
+        return sqlite3.connect(self.db_path, timeout=30.0)
+
     def create_tables(self):
         """Memastikan tabel snapshots selalu ada."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS snapshots (
@@ -27,9 +31,9 @@ class DatabaseManager:
         ''')
         
         # ponytail migration: lazily add columns to old databases
-        for col in ['sell_label', 'high', 'low']:
+        for col in ['sell_label', 'high', 'low', 'model_version_hash']:
             try:
-                cursor.execute(f"ALTER TABLE snapshots ADD COLUMN {col} REAL")
+                cursor.execute(f"ALTER TABLE snapshots ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
                 pass # column already exists
         # ponytail: table to track live trades and link them to ML probabilities
@@ -45,46 +49,59 @@ class DatabaseManager:
                 features_json TEXT,
                 macro_bias TEXT,
                 probability REAL,
+                model_version_hash TEXT,
                 status TEXT,
                 outcome TEXT
             )
         ''')
+        try:
+            cursor.execute("ALTER TABLE live_trades ADD COLUMN model_version_hash TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
         conn.commit()
         conn.close()
 
-    def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None):
+    def save_snapshot(self, symbol, price, features, label=None, sell_label=None, high=None, low=None, model_version_hash=None):
         """Menyimpan fitur ke database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         features_json = json.dumps(features)
         
-        # ponytail: save high/low for pessimistic triple barrier labeling
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        wib_time = datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S")
+        
         query = """
-        INSERT INTO snapshots (symbol, price, high, low, features_json, label, sell_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO snapshots (timestamp, symbol, price, high, low, features_json, label, sell_label, model_version_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(query, (symbol, price, high, low, features_json, label, sell_label))
+        cursor.execute(query, (wib_time, symbol, price, high, low, features_json, label, sell_label, model_version_hash))
         conn.commit()
         conn.close()
 
-    def log_trade_open(self, trade_id, direction, entry_price, features, macro_bias, probability):
-        """Ponytail: Log when a trade is sent to MT5"""
-        conn = sqlite3.connect(self.db_path)
+    def log_trade_open(self, trade_id, direction, entry_price, features, macro_bias, probability, model_version_hash=None):
+        """Ponytail: Log when a trade is sent to MT5 with model version hash"""
+        conn = self._get_conn()
         cursor = conn.cursor()
         feat_str = json.dumps(features)
         
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        wib_time = datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S")
+        
         query = """
-        INSERT INTO live_trades 
-        (trade_id, direction, entry_price, features_json, macro_bias, probability, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'OPEN')
+        INSERT OR IGNORE INTO live_trades 
+        (trade_id, timestamp, direction, entry_price, features_json, macro_bias, probability, model_version_hash, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """
-        cursor.execute(query, (trade_id, direction, entry_price, feat_str, macro_bias, probability))
+        cursor.execute(query, (trade_id, wib_time, direction, entry_price, feat_str, macro_bias, probability, model_version_hash))
         conn.commit()
         conn.close()
 
     def log_trade_close(self, trade_id, exit_price, profit, duration):
         """Ponytail: Update trade when MT5 tells us it closed"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         outcome = "WIN" if profit > 0 else "LOSS"
         
