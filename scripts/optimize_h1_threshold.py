@@ -39,7 +39,7 @@ print(f"Baseline SELL WR: {sell_base:.1f}% (n={len(sell_all)})")
 print(f"\n--- SELL (shorting a pump, rel_h1 > threshold) ---")
 print(f"{'Threshold':>10} | {'WR%':>6} | {'n':>6}")
 print("-" * 35)
-for t in [x * 0.5 for x in range(0, 31)]: 
+for t in [x * 0.5 for x in range(0, 61)]: 
     subset = [(r, s) for r, s in sell_all if r > t]
     if len(subset) < 10: break
     wr = sum(1 for _, s in subset if s == 1) / len(subset) * 100
@@ -49,7 +49,7 @@ for t in [x * 0.5 for x in range(0, 31)]:
 print(f"\n--- BUY (buying a dump, rel_h1 < -threshold) ---")
 print(f"{'Threshold':>10} | {'WR%':>6} | {'n':>6}")
 print("-" * 35)
-for t in [x * 0.5 for x in range(0, 31)]:
+for t in [x * 0.5 for x in range(0, 61)]:
     subset = [(r, b) for r, b in buy_all if r < -t]
     if len(subset) < 10: break
     wr = sum(1 for _, b in subset if b == 1) / len(subset) * 100

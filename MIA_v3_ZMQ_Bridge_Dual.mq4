@@ -47,10 +47,10 @@ void OnTick() {
    
    long candle_time = iTime(Symbol(), PERIOD_M1, 0);
    
-   // Kirim data ke Python melalui ZeroMQ (termasuk M1 tick volume)
+   // Kirim data ke Python melalui ZeroMQ (termasuk M1 tick volume dan Account Equity)
    string json_data = StringFormat(
-      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"volume\": %d, \"time\": %d}",
-      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), vol, candle_time
+      "{\"symbol\": \"%s\", \"bid\": %f, \"ask\": %f, \"open\": %f, \"high\": %f, \"low\": %f, \"close\": %f, \"m5_close\": %f, \"m15_close\": %f, \"h1_close\": %f, \"h4_close\": %f, \"d1_open\": %f, \"volume\": %d, \"time\": %d, \"equity\": %f}",
+      Symbol(), Bid, Ask, open, high, low, close, iClose(Symbol(), PERIOD_M5, 1), iClose(Symbol(), PERIOD_M15, 1), iClose(Symbol(), PERIOD_H1, 1), iClose(Symbol(), PERIOD_H4, 1), iOpen(Symbol(), PERIOD_D1, 0), vol, candle_time, AccountInfoDouble(ACCOUNT_EQUITY)
    );
    
    pub.send(json_data);
@@ -100,7 +100,20 @@ void OnTick() {
                Print("OrderSend failed with error #", GetLastError());
            }
        }
-   }
+        
+        // ponytail: close all open trades on news embargo signal from Python
+        if(StringFind(rcv, "\"action\": \"CLOSE_ALL\"") >= 0) {
+            for(int j = OrdersTotal() - 1; j >= 0; j--) {
+                if(OrderSelect(j, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == Symbol()) {
+                    if(OrderType() == OP_BUY)
+                        OrderClose(OrderTicket(), OrderLots(), Bid, 3, clrYellow);
+                    else if(OrderType() == OP_SELL)
+                        OrderClose(OrderTicket(), OrderLots(), Ask, 3, clrYellow);
+                }
+            }
+            Print("CLOSE_ALL: All positions closed (news embargo).");
+        }
+    }
    
    // --- Send TRADE_CLOSED Back ---
    for(int i = OrdersHistoryTotal() - 1; i >= 0; i--) {

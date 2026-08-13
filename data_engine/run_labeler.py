@@ -3,7 +3,7 @@ import pandas as pd
 import os
 from .triple_barrier import TripleBarrierLabeler
 
-def label_database(db_filename='ai_data.db'):
+def label_database(db_filename='ai_data.db', table_name='snapshots'):
     """
     Membaca data historis dari database, menghitung Triple Barrier Label,
     dan mengupdate kolom 'label' yang masih NULL.
@@ -17,12 +17,12 @@ def label_database(db_filename='ai_data.db'):
         return
 
     # ponytail: deduplicate snapshots by minute (ROW_NUMBER() OVER PARTITION BY minute) to ensure 1 clean row per M1 candle close
-    dedup_query = """
+    dedup_query = f"""
     SELECT id, price, high, low, label, sell_label 
     FROM (
         SELECT id, price, high, low, label, sell_label, timestamp,
                ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp) ORDER BY id DESC) as rn
-        FROM snapshots
+        FROM {table_name}
     ) WHERE rn = 1 ORDER BY id ASC
     """
     conn = sqlite3.connect(db_path)
@@ -49,7 +49,7 @@ def label_database(db_filename='ai_data.db'):
     ids = df['id'].values
     current_labels = df['label'].values
     
-    updates = []
+    to_update = []
     buy_stats = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
     sell_stats = {1: 0, -1: 0, -2: 0, -3: 0, 0: 0}
     
@@ -80,7 +80,7 @@ def label_database(db_filename='ai_data.db'):
         sell_stats_15[sell_label_15] += 1
         
         if pd.isnull(current_labels[i]) or pd.isnull(df['sell_label'].values[i]):
-            updates.append((buy_label, sell_label, int(ids[i])))
+            to_update.append((buy_label, sell_label, int(ids[i])))
             
     print("\n[+] --- WR Prediction Verification (OHLC Pessimistic) ---")
     b_total = buy_stats[1] + buy_stats[-1] + buy_stats[-2] + buy_stats[-3]
@@ -100,15 +100,20 @@ def label_database(db_filename='ai_data.db'):
     print(f"SELL (30/60 Wide) Win Rate: {s15_wr:.2f}% (Wins: {sell_stats_15[1]}, Losses: {sell_stats_15[-1]}, Fast SOTW: {sell_stats_15[-2]}, Slow SOTW: {sell_stats_15[-3]}, Timeout: {sell_stats_15[0]})")
     print("--------------------------------------\n")
 
-    if len(updates) > 0:
+    if len(to_update) > 0:
         cursor = conn.cursor()
-        cursor.executemany("UPDATE snapshots SET label = ?, sell_label = ? WHERE id = ?", updates)
+        update_query = f"UPDATE {table_name} SET label = ?, sell_label = ? WHERE id = ?"
+        cursor.executemany(update_query, to_update)
         conn.commit()
-        print(f"[+] Berhasil mengupdate dan melabeli {len(updates)} baris data!")
+        print(f"[+] Berhasil mengupdate {len(to_update)} baris dengan Triple Barrier Label di tabel {table_name}.")
     else:
         print("[*] Tidak ada data baru yang bisa dilabeli (mungkin data masa depan kurang).")
 
     conn.close()
 
 if __name__ == "__main__":
-    label_database()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--table", type=str, default="snapshots")
+    args = parser.parse_args()
+    label_database(table_name=args.table)

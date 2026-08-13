@@ -134,7 +134,7 @@ def main_loop(port=5567):
                                     continue
                                 try:
                                     event_dt = dt.strptime(f"{date_str} {time_str}", "%m-%d-%Y %I:%M%p")
-                                    event_dt = event_dt.replace(tzinfo=ZoneInfo("America/New_York"))
+                                    event_dt = event_dt.replace(tzinfo=ZoneInfo("UTC"))
                                     title = event.findtext('title', 'Unknown')
                                     new_events.append((event_dt, title, impact))
                                 except ValueError:
@@ -145,9 +145,11 @@ def main_loop(port=5567):
 
                     for event_dt, title, impact in cached_red_events:
                         mins_diff = (event_dt - now).total_seconds() / 60.0
-                        embargo_before, embargo_after = (-30, 60) if impact == 'High' else (-15, 15)
+                        # mins_diff is positive BEFORE the news, negative AFTER the news.
+                        # High impact: 30 mins before (+30) to 60 mins after (-60)
+                        embargo_before, embargo_after = (30, 60) if impact == 'High' else (15, 15)
                         
-                        if embargo_before <= mins_diff <= embargo_after:
+                        if -embargo_after <= mins_diff <= embargo_before:
                             print(f"[!] {impact.upper()} IMPACT NEWS EMBARGO: {title} ({mins_diff:+.0f}min)")
                             news_embargo = True
                             break
@@ -156,6 +158,12 @@ def main_loop(port=5567):
 
                 if news_embargo:
                     print("[!] NEWS EMBARGO. Sitting on hands.")
+                    # ponytail: close all open trades to protect from news slippage
+                    if len(active_trade_ids) > 0:
+                        close_signal = json.dumps({"action": "CLOSE_ALL"})
+                        pub_socket.send_string(close_signal)
+                        print(f"[!] CLOSE_ALL sent to MT4. Closing {len(active_trade_ids)} active trade(s) before news.")
+                        active_trade_ids.clear()
                 
                 # Masukkan ke fitur agar tersimpan di DB
                 features["macro_bias"] = macro_bias
@@ -206,11 +214,16 @@ def main_loop(port=5567):
                 )
                 
                 # ponytail: Asymmetric H1 Dead Zone (ATR-normalized)
-                # SELL Danger Zone: between 1.5 and 9.0 ATRs (shorting into a strong, but not yet exhausted pump)
-                # BUY Danger Zone: deeper than 9.5 ATRs (catching a falling knife)
                 rel_h1 = features.get('rel_h1', 0)
-                if 1.5 < rel_h1 < 9.0:
+                
+                # SELL Danger Zone: 
+                # Block 1.5 to 9.0 (Shorting into strong unexhausted pump)
+                # Block >= 22.5 (Structural break / Black Swan - mean reversion fails)
+                if (1.5 < rel_h1 < 9.0) or (rel_h1 > 22.5):
                     prob_sell = 0.0
+                    
+                # BUY Danger Zone:
+                # Block <= -9.5 (Catching a falling knife - WR crashes to 25%, and eventually 7% at -28)
                 if rel_h1 < -9.5:
                     prob_buy = 0.0
 
@@ -230,10 +243,10 @@ def main_loop(port=5567):
                     best_prob = max(prob_buy, prob_sell)
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
-                    # ponytail: Direction-Asymmetric Thresholds (Platt Calibrated)
-                    # BUY prior base rate ~35% (0.35 thresh = high confidence, 45.1% WR / +$1,680 P&L out-of-sample)
-                    # SELL prior base rate ~42% (0.40 thresh = high confidence)
-                    min_thresh = 0.35 if best_dir == "BUY" else 0.40
+                    # ponytail: Isotonic Calibrated Thresholds
+                    # With a 1:1.5 RR, mathematical breakeven is 40%. 
+                    # Isotonic outputs honest probabilities, so we must demand >40% to be profitable.
+                    min_thresh = 0.42
                     
                     # ponytail: prevent stacking duplicate trades — max 3 active trades, 3-min (180s) cooldown
                     time_since_trade = time.time() - last_trade_time

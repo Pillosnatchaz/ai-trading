@@ -60,7 +60,7 @@ class LightGBMPredictor:
         # Load model jika sudah ada
         self.load_model()
 
-    def fetch_training_data(self):
+    def fetch_training_data(self, table_name='snapshots'):
         """Mengambil data dari SQLite, memecah JSON menjadi kolom DataFrame."""
         if not os.path.exists(self.db_path):
             print(f"[!] Database tidak ditemukan di {self.db_path}")
@@ -75,8 +75,8 @@ class LightGBMPredictor:
         FROM (
             SELECT features_json, {target_col}, timestamp, id,
                    ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp) ORDER BY id DESC) as rn
-            FROM snapshots
-            WHERE {target_col} IS NOT NULL AND {target_col} != -2 AND timestamp >= '2026-07-24'
+            FROM {table_name}
+            WHERE {target_col} IS NOT NULL AND {target_col} != -2
         ) WHERE rn = 1 ORDER BY id ASC
         """
         cursor = conn.cursor()
@@ -121,10 +121,10 @@ class LightGBMPredictor:
         df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open', 'dist_to_fvg'], errors='ignore')
         return df
 
-    def train(self):
+    def train(self, table_name='snapshots'):
         """Melatih model LightGBM dari data historis."""
         print("[*] Mengambil data training dari database...")
-        df = self.fetch_training_data()
+        df = self.fetch_training_data(table_name=table_name)
         
         if df is None or len(df) < 50:
             print("[!] Data tidak cukup untuk training. Minimal 50 baris berlabel.")
@@ -323,14 +323,21 @@ class LightGBMPredictor:
 
 # Fungsi eksekusi manual untuk training
 if __name__ == "__main__":
-    print("\n" + "="*30)
-    print(" TRAINING BUY MODEL")
-    print("="*30)
-    predictor_buy = LightGBMPredictor(direction='buy')
-    predictor_buy.train()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--table", type=str, default="snapshots")
+    args = parser.parse_args()
+
+    # Train Model BUY
+    print("\n" + "="*50)
+    print("Mulai Training Model: BUY")
+    print("="*50)
+    model_buy = LightGBMPredictor(direction='buy')
+    model_buy.train(table_name=args.table)
     
-    print("\n" + "="*30)
-    print(" TRAINING SELL MODEL")
-    print("="*30)
-    predictor_sell = LightGBMPredictor(direction='sell')
-    predictor_sell.train()
+    # Train Model SELL
+    print("\n" + "="*50)
+    print("Mulai Training Model: SELL")
+    print("="*50)
+    model_sell = LightGBMPredictor(direction='sell')
+    model_sell.train(table_name=args.table)
