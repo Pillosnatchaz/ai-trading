@@ -6,7 +6,7 @@ class FeatureBuilder:
     def __init__(self):
         self.math = IndicatorMath()
         
-    def build(self, df):
+    def build(self, df, now_wib=None):
         """
         Membangun matriks fitur dari data OHLCV yang masuk.
         df harus memiliki kolom: 'bid', 'ask', 'h1_close', 'h4_close', 'open', 'close', 'high', 'low'
@@ -48,7 +48,8 @@ class FeatureBuilder:
         # Time / Session Transition Countdown (WIB boundaries: 14:00, 19:30, 22:00)
         from datetime import datetime
         from zoneinfo import ZoneInfo
-        now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
+        if now_wib is None:
+            now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
         current_minutes = now_wib.hour * 60 + now_wib.minute
         session_boundaries = [14 * 60, 19 * 60 + 30, 22 * 60]
         future_boundaries = [b - current_minutes for b in session_boundaries if b > current_minutes]

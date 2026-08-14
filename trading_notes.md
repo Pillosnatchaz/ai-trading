@@ -126,4 +126,40 @@
 - **No cooldown = too many trades.** 70 trades in Overlap is excessive. Need some throttle.
 
 ---
+## Thursday: The Look-Ahead Leak (August 13)
+- **Date:** 2026-08-13
+- **Live Performance:** 50 trades, 20 wins, -$25.38. Morning (before 12:00) was +$129.32; two afternoon/evening BUY streaks gave all of it back.
+- **Observation 1 (Two identical streaks, only one near news):** 14:01-15:07 lost 16 of 17 BUY trades (-$140.94). 18:26-18:54 lost 8 of 8 BUY (-$88.20). Both started the moment price began trending down. The 18:00 streak had no news within 36 minutes (PPI was 19:30 WIB, FOMC speakers 19:15/19:40), which killed the post-news explanation for both.
+- **Observation 2 (The news embargo works — it's the boundary that doesn't):** GBP GDP at 13:00 WIB. Trades stopped 12:20 and resumed 14:01 — a 101-minute gap exactly matching the 30-before/60-after window, with 101 snapshots recorded throughout, so the bot was alive and deliberately sitting out. The largest move of the day happened *inside* the embargo and it took none of it. It then resumed at full size into continued drift.
+- **Observation 3 (Trend efficiency flips the bot):** Efficiency = net move / total distance travelled; 1.0 = straight line, ~0 = chop. 18:00-18:25 eff 0.025 → 4 wins of 4. 18:25-18:56 eff 0.377 → 0 wins of 9. Same shape in the afternoon: Aug 13 14:00-15:10 eff 0.197 versus the same window on Aug 10/11/12 at 0.074/0.005/0.033, all of which were profitable. **The bot needs chop and dies in trends.**
+- **Root Cause (THE LEAK):** `build_historical_db.py` built higher-timeframe references with `resample(...).last().reindex().ffill()`. `resample('1h').last()` puts the LAST close of an hour at the START of that hour; ffill then hands that price to every bar inside it. A bar at 13:01 was given the close from 13:59. Live, the EA sends `iClose(tf, 1)` — the previous COMPLETED candle. So `mom_dist_h1` and `mom_dist_m15` (the model's two highest-importance features) meant *"how far below where price will be"* in training and *"how far below where price was"* live. Exact opposite. The model learned buy-the-dip from dips measured against future prices; live that same signal means the market is falling, so it bought falling knives.
+- **Evidence:** correlation between `rel_h1` and forward 30-minute return was **-0.672** across 70,618 training rows (should be ~0), strengthening to -0.866 mid-hour and decaying to -0.292 in the final ten minutes — the exact shape of a look-ahead leak, since late bars have less future left inside them. What first exposed it: historical BUY win rate in the zone the H1 filter *blocks* read 93.71%.
+
+### Changes Made
+1. **Leak fixed:** new `_prev_bucket()` helper in `build_historical_db.py` adds `.shift(1)` to all four timeframes (M5/M15/H1/H4), matching `iClose(tf, 1)`. `_selfcheck()` asserts no-lookahead before every rebuild.
+2. **Wall-clock bug fixed:** `feature_builder.build()` called `datetime.now()` for `mins_to_session_transition`, so the replay stamped the time it *ran* onto all 70k bars — 11 distinct values (all 253-259) versus 774 live. Signature is now `build(df, now_wib=None)` and the replayer passes each bar's own timestamp.
+3. **Absolute prices dropped from training:** `swing_high`/`swing_low` are raw gold prices, and 98-100% of live values fall outside the training range. They sat at importance 0 while the leak dominated, then jumped to #1 and #3 once it was removed. Now in the drop list in `fetch_training_data`. Still present in the features dict for SL placement.
+4. **Calibration purged:** 60-row purge at each TimeSeriesSplit fold boundary (labels look 60 bars forward, so boundary rows leaked into validation). Calibrator now fits only on `covered` rows — TimeSeriesSplit never validates its first block, so 8,161 rows (16.7%) were being fed in as raw=0.
+5. **Circuit breaker:** 3 consecutive losses in a direction pauses that direction for 30 minutes. Would have cut the 8x streak to 3 (~-$33 instead of -$88).
+6. **Retrained:** BUY `2d167aa9bd`, SELL `5c0dc07da1`.
+
+### Results (post-fix)
+- `rel_h1` vs forward 30-min return: **-0.672 → 0.004.** Leak gone.
+- Training accuracy 82.15% → 58.03% (BUY) / 60.95% (SELL). The drop *is* the success condition — the 82% was the leak grading its own homework.
+- **Calibration is monotone for the first time.** SELL: 46.58% @ 0.42 → 50.64% @ 0.45 → 53.99% @ 0.50 (base 39.30%). BUY: 47.12% @ 0.42 (base 41.97%).
+- Max calibrated probability is now 0.577 (BUY) / 0.550 (SELL). The 0.996 readings are gone.
+- Top features are now `mins_to_session_transition`, `atr`, `mom_dist_h1`, `tick_volume`, `bb_bw`.
+- **Trade frequency drops ~10x.** BUY fired on 47% of bars before, now 2.4%. SELL 40% → 8%. Expected: the old volume came from a model confident about noise.
+
+### Key Lesson
+The H1 trend filter (added July 6) was never the problem — it was the patch holding the leak together. Historical stats claimed it was blocking the best BUY zone at 93.71% WR; that number *was* the leak. **When live results and backtest numbers disagree on this project, suspect the replay pipeline before doubting the live-derived filter.**
+
+### Still TODO
+- [ ] Watch live calibration buckets for 2-3 days — everything above is still backtest
+- [ ] Revisit `min_thresh` (0.45-0.50 looks better on holdout, but that is one split)
+- [ ] Re-validate H1 dead zone thresholds against live results under the new model
+- [ ] Low-impact FOMC speakers are not embargoed (`impact not in ('High','Medium')`) — no damage Aug 13 since PPI already covered the window, but it is a real hole
+- [ ] `minutes_since_red_folder` as an ML feature (still deferred, Phase 2)
+
+---
 *(Add future notes below)*

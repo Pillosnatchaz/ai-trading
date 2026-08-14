@@ -36,6 +36,26 @@ def init_historical_table():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_ts ON historical_snapshots(timestamp)")
     conn.close()
 
+def _prev_bucket(close, freq, index):
+    """Close of the previous COMPLETED bucket, matching the EA's iClose(tf, 1).
+
+    Without .shift(1), resample().last() puts the LAST close of a bucket at the
+    bucket's START, and ffill then hands that future price to every bar inside it.
+    """
+    return close.resample(freq).last().shift(1).reindex(index).ffill()
+
+
+def _selfcheck():
+    idx = pd.date_range('2026-06-03 12:00', periods=130, freq='1min')
+    close = pd.Series(range(130), index=idx, dtype=float)
+    h1 = _prev_bucket(close, '1h', idx)
+    assert pd.isna(h1.iloc[0]), "first bucket has no predecessor"
+    # bars in the 13:00 hour must see the 12:00 bucket's final close (12:59 -> 59.0)
+    assert h1.loc['2026-06-03 13:00'] == 59.0, h1.loc['2026-06-03 13:00']
+    assert h1.loc['2026-06-03 13:59'] == 59.0, h1.loc['2026-06-03 13:59']
+    print("[+] no-lookahead selfcheck passed")
+
+
 def build_history():
     if not Path(CSV_PATH).exists():
         print(f"[!] Please copy {CSV_PATH} from MT4 MQL4/Files/ to here first.")
@@ -52,10 +72,10 @@ def build_history():
 
     print("[*] Resampling higher timeframes (M5, M15, H1, H4)...")
     df.set_index('timestamp', inplace=True)
-    m5 = df['close'].resample('5min').last().reindex(df.index).ffill()
-    m15 = df['close'].resample('15min').last().reindex(df.index).ffill()
-    h1 = df['close'].resample('1h').last().reindex(df.index).ffill()
-    h4 = df['close'].resample('4h').last().reindex(df.index).ffill()
+    m5 = _prev_bucket(df['close'], '5min', df.index)
+    m15 = _prev_bucket(df['close'], '15min', df.index)
+    h1 = _prev_bucket(df['close'], '1h', df.index)
+    h4 = _prev_bucket(df['close'], '4h', df.index)
     df.reset_index(inplace=True)
 
     df['m5_close'] = m5.values
@@ -73,9 +93,9 @@ def build_history():
     for i in tqdm(range(100, len(df))):
         # Pass a rolling window of 100 candles to the builder
         window = df.iloc[i-100:i+1]
-        features = builder.build(window)
-        
         row = window.iloc[-1]
+        # ponytail: bar's own time, not wall clock. assumes dump is WIB — shift here if the MT4 server isn't.
+        features = builder.build(window, now_wib=row['timestamp'])
         batch.append((
             str(row['timestamp']),
             "XAUUSD",
@@ -111,5 +131,6 @@ def build_history():
     print("    Next step: run triple_barrier.py on the historical_snapshots table to generate labels.")
 
 if __name__ == "__main__":
+    _selfcheck()
     init_historical_table()
     build_history()

@@ -40,7 +40,14 @@ def main_loop(port=5567):
     last_trade_time = 0.0
     last_calendar_fetch_time = 0.0
     cached_red_events = []
-    
+
+    # ponytail: consecutive-loss breaker. flat count, no decay — loosen if it trips too eagerly.
+    trade_dirs = {}
+    consec_loss = {"BUY": 0, "SELL": 0}
+    paused_until = {"BUY": 0.0, "SELL": 0.0}
+    MAX_CONSEC_LOSS = 3
+    PAUSE_SECONDS = 1800
+
     print("[*] Main Orchestrator: Sistem MIA v4.0 Siap (Candle-Based Mode).")
     
     while True:
@@ -59,6 +66,16 @@ def main_loop(port=5567):
                 )
                 if closed_id in active_trade_ids:
                     active_trade_ids.remove(closed_id)
+                cd = trade_dirs.pop(closed_id, None)
+                if cd:
+                    if (data.get('profit') or 0) > 0:
+                        consec_loss[cd] = 0
+                    else:
+                        consec_loss[cd] += 1
+                        if consec_loss[cd] >= MAX_CONSEC_LOSS:
+                            paused_until[cd] = time.time() + PAUSE_SECONDS
+                            consec_loss[cd] = 0
+                            print(f"[!] {cd} paused {PAUSE_SECONDS // 60}min after {MAX_CONSEC_LOSS} straight losses.")
                 print(f"[+] Trade {closed_id} CLOSED. Profit: {data.get('profit')}")
                 continue
             
@@ -227,6 +244,12 @@ def main_loop(port=5567):
                 if rel_h1 < -9.5:
                     prob_buy = 0.0
 
+                # ponytail: circuit breaker — bounds any losing run regardless of cause
+                if time.time() < paused_until["BUY"]:
+                    prob_buy = 0.0
+                if time.time() < paused_until["SELL"]:
+                    prob_sell = 0.0
+
                 print(f"[*] AI Win Prob -> BUY: {prob_buy * 100:.1f}% (Raw: {raw_buy * 100:.1f}%) | SELL: {prob_sell * 100:.1f}% (Raw: {raw_sell * 100:.1f}%) | Dist EMA: {features['dist_ema_50']:.4f} | H1: {features.get('rel_h1', 0):.4f}")
 
                 # Only trade if we are in high priority sessions
@@ -253,6 +276,7 @@ def main_loop(port=5567):
                     if best_prob >= min_thresh and len(active_trade_ids) < MAX_CONCURRENT_TRADES and time_since_trade >= 180:
                         trade_id = int(time.time())
                         active_trade_ids.add(trade_id)
+                        trade_dirs[trade_id] = best_dir
                         last_trade_time = time.time()
                         
                         ask = data.get('ask', 0.0)

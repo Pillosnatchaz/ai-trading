@@ -117,8 +117,11 @@ class LightGBMPredictor:
         if 'volatility_regime' in df.columns:
             df['volatility_regime'] = df['volatility_regime'].map({'LOW': 0, 'NORMAL': 1, 'HIGH': 2}).fillna(1)
             
-        # ponytail: drop swing features and audit columns
-        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open', 'dist_to_fvg'], errors='ignore')
+        # ponytail: drop swing features and audit columns.
+        # swing_high/low are ABSOLUTE prices — they memorise the training price range
+        # and stop generalising once gold trades outside it. Still available in the
+        # live features dict for SL placement, just never fed to the model.
+        df = df.drop(columns=['is_near_ob', 'dist_to_bull_ob', 'dist_to_bear_ob', 'live_prob_buy', 'live_prob_sell', 'session', 'timestamp', 'rel_h4', 'rel_d1_open', 'dist_to_fvg', 'swing_high', 'swing_low'], errors='ignore')
         return df
 
     def train(self, table_name='snapshots'):
@@ -156,12 +159,18 @@ class LightGBMPredictor:
         
         kf = TimeSeriesSplit(n_splits=5)
         oof_probs = np.zeros(len(X_train))
-        
+        covered = np.zeros(len(X_train), dtype=bool)
+        LABEL_HORIZON = 60  # must match TripleBarrierLabeler(max_bars=...)
+
         print("[*] Generating 5-Fold Out-Of-Fold predictions for Isotonic Calibration...")
         for tr_idx, val_idx in kf.split(X_train):
+            # ponytail: purge the fold boundary — the last LABEL_HORIZON train rows have
+            # labels decided by prices sitting inside the validation window.
+            if len(tr_idx) > LABEL_HORIZON:
+                tr_idx = tr_idx[:-LABEL_HORIZON]
             X_tr_f, y_tr_f = X_train.iloc[tr_idx], y_train.iloc[tr_idx]
             X_va_f = X_train.iloc[val_idx]
-            
+
             fold_model = lgb.LGBMClassifier(
                 n_estimators=50,
                 learning_rate=0.03,
@@ -173,11 +182,15 @@ class LightGBMPredictor:
             )
             fold_model.fit(X_tr_f, y_tr_f)
             oof_probs[val_idx] = fold_model.predict_proba(X_va_f)[:, 1]
-            
-        raw_cal_probs = np.clip(oof_probs, 1e-7, 1 - 1e-7)
-        
+            covered[val_idx] = True
+
+        # ponytail: TimeSeriesSplit never validates its first block — those rows still
+        # hold the initialised 0.0 and are not predictions. Calibrate only on real ones.
+        print(f"[*] OOF coverage: {covered.sum()}/{len(covered)} ({covered.mean() * 100:.1f}%)")
+        raw_cal_probs = np.clip(oof_probs[covered], 1e-7, 1 - 1e-7)
+
         self.calibrator = IsotonicRegression(out_of_bounds='clip')
-        self.calibrator.fit(raw_cal_probs, y_train)
+        self.calibrator.fit(raw_cal_probs, y_train[covered])
         
         # Train final LightGBM model on 100% of X_train
         self.model = lgb.LGBMClassifier(

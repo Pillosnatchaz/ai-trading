@@ -1,5 +1,5 @@
 # PRD: MIA v4.0 — LightGBM-Driven XAUUSD Scalping System
-**Status:** Living document (last audit: Aug 10, 2026)
+**Status:** Living document (last audit: Aug 13, 2026)
 **Supersedes:** MIA v3.0
 **Author context:** Rebuild informed by v3.0 live/historical diagnostics (BUY model collapse, SELL inverse-calibration finding, label-squashing leak, session-transition losses)
 
@@ -17,6 +17,7 @@ MIA v3.0 proved the core architecture (ZMQ bridge, dual LightGBM engine, Triple 
 6. No session-transition awareness, despite an observed empirical pattern of London-to-NY reversal causing correlated losses.
 7. **Confirmed model version mismatch:** Historical `live_trades` aggregated 46 retrain iterations across 3 weeks, causing historical audit logs to compare multiple distinct model generations.
 8. No class-imbalance handling in LightGBM despite a ~34% minority "win" class.
+9. **(Found Aug 13, 2026 — dominant cause)** Look-ahead leak in the historical replay. `build_historical_db.py` resampled higher timeframes with `.last().ffill()`, giving every bar a close from inside its own future, while the live EA sends `iClose(tf, 1)`. `mom_dist_m15`/`mom_dist_h1` therefore carried *opposite* meanings in training and live. Fixed via `.shift(1)`. This invalidates all pre-Aug-13 backtest figures in this document and is the confirmed cause of the BUY falling-knife behaviour and the miscalibration. Full analysis in `trading_notes.md`.
 
 **Goal of v4.0:** Fix the above with minimal architectural upheaval — this is a targeted rebuild of the labeling, feature, validation, and calibration layers, not a rewrite of the ZMQ/execution plumbing that already works.
 
@@ -93,10 +94,10 @@ Key changes from v3.0: a **Regime Gate** and **Calibration Layer** are now expli
 | `wick_body_ratio` | Microstructure | (upper+lower wick) / body size, current candle | ✅ Implemented |
 | `tick_volume` | Microstructure | M1 tick count fetched natively via MT4 `iVolume()` | ✅ Implemented |
 | `session` | Time/Regime | categorical: ASIAN/LONDON/OVERLAP | ✅ Implemented (22:00 WIB cutoff enforced) |
-| `mins_to_session_transition` | Time/Regime | continuous countdown to next session boundary | ✅ Implemented |
+| `mins_to_session_transition` | Time/Regime | continuous countdown to next session boundary | ✅ Implemented. ⚠️ Was a near-constant in all historical data until Aug 13 — `feature_builder` used wall-clock `datetime.now()` during replay. `build()` now accepts `now_wib`. |
 | `macro_bias` | Regime | slope-based BULLISH/BEARISH/NEUTRAL flag | ✅ Implemented, derived from EMA 50 slope |
 | `volatility_regime` | Regime | categorical bucket from ATR thresholds (LOW/NORMAL/HIGH) | ✅ Implemented |
-| `swing_high`, `swing_low` | Structural | 20-bar max/min for dynamic SL placement | ✅ Implemented |
+| `swing_high`, `swing_low` | Structural | 20-bar max/min for dynamic SL placement | ✅ Implemented. **Execution-only — dropped from the training matrix Aug 13.** They are absolute prices; 98–100% of live values fall outside the training range. |
 | `live_prob_buy/sell` | Audit only | model output | **hard rule: never joins the training feature set** ✅ |
 
 #### Deferred to Phase 2 (not yet implemented)
@@ -159,8 +160,10 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 - **Session throttle (22:00 WIB Hard Cutoff)**: All sessions after 22:00 WIB marked `CLOSED` — no trading. 15-minute cooldown at NY Overlap open (19:00–19:15 WIB) to avoid session-transition fakeouts.
 - **News embargo**: unchanged from v3.0 (30m pre / 60m post high-impact ForexFactory events). `Holiday` impact events are deliberately ignored to prevent freezing the bot during low-volume sessions; the bot relies on its internal volatility features (`atr`, `tick_volume`) to handle slow markets natively.
 - **Regime gate (H1 Trend Filter)**: Uses a data-backed asymmetric "Dead Zone" based on ATR-normalized `rel_h1` distance:
-  - **SELL Danger Zone:** `1.5 < rel_h1 < 9.0` (Blocks shorting into a strong, unexhausted pump).
+  - **SELL Danger Zone:** `1.5 < rel_h1 < 9.0` (Blocks shorting into a strong, unexhausted pump), plus `rel_h1 > 22.5` (structural break / black swan).
   - **BUY Danger Zone:** `rel_h1 < -9.5` (Blocks catching a deep falling knife).
+  - **These thresholds are live-derived and are not to be re-tuned from `historical_snapshots` statistics.** Pre-Aug-13 historical data claimed the BUY block zone won 93.71% — that figure was the §1.9 leak. Re-validate against live outcomes only.
+- **Circuit breaker (added Aug 13)**: 3 consecutive losses in one direction pauses that direction for 30 minutes. Direction-scoped, resets on any win. Bounds a losing run regardless of cause.
 
 ---
 
@@ -179,6 +182,8 @@ Every labeling and validation change must report BUY and SELL metrics **separate
 ## 8. Validation & Experimentation Discipline
 
 1. **Walk-forward validation:** ✅ **Implemented for Calibration.** The probability calibrator uses 5-Fold `TimeSeriesSplit` to generate Out-Of-Fold predictions, ensuring it never uses future data to predict past folds. The final holdout evaluation still uses a static 80/20 chronological split with a 120-bar embargo gap (line 140–142 of `ml_lightgbm.py`).
+   - **Aug 13 corrections:** a 60-row purge (matching the Triple Barrier horizon) is now applied at each fold boundary — without it, the last rows of every training slice had labels decided by prices inside the validation window. The calibrator also now fits **only on rows that received an OOF prediction**; `TimeSeriesSplit` never validates its first block, so 8,161 rows (16.7%) were previously fed to Isotonic as genuine `raw=0` predictions.
+   - **Any feature derived from a resampled higher timeframe must be verified to correlate ~0 with forward returns before it is trusted.** This check is what surfaced the §1.9 leak and is now mandatory after every rebuild.
 2. **Champion/challenger deployment (PLANNED — not yet implemented):** Target is shadow mode for new models before promotion. Currently, retrained models go live directly after manual review.
 3. **Calibration-bucket reporting is now a standard, automated part of every model evaluation** (not a one-off diagnostic) — win rate by probability decile, by direction, both on historical and live-shadow data, checked for monotonicity and confidence intervals (not just point estimates — the earlier report over-trusted small-n buckets like n=76).
 4. **Model version logging**: ✅ every row in the live prediction/outcome table includes the exact model artifact hash. This closes the "was live and historical evaluation even using the same model" gap that couldn't be ruled out in the v3.0 postmortem.
@@ -222,7 +227,7 @@ Fix label collapsing, feature mislabeling/sentinel issues, add dynamic ATR-based
 
 1. Does a direction-asymmetric time barrier close the BUY/SELL timeout gap, or is a fixed horizon fine once SOTW-handling is fixed?
 2. Are the BUY and SELL feature/execution code paths verified symmetric (spread handling, FVG detection mirroring, etc.) — this audit was recommended but not yet completed as of this document.
-3. Was the SELL inverse historical calibration finding ever explained (model-version mismatch? regime-specific? sample artifact?) — flagged as high-priority, unresolved.
+3. ~~Was the SELL inverse historical calibration finding ever explained?~~ **RESOLVED Aug 13, 2026.** It was the §1.9 look-ahead leak. Training-side probabilities were derived from features containing future prices, so the ranking they produced could not survive contact with live data. Post-fix, calibration is monotone in both directions for the first time (SELL: 46.6% @ 0.42 → 50.6% @ 0.45 → 54.0% @ 0.50, base 39.3%).
 4. What does XAUUSD's actual price/`macro_bias` distribution look like over the specific live-trading window that produced the 11.7% BUY WR — needed to confirm or refute the regime-drift narrative directly rather than inferring it.
 
 ---
