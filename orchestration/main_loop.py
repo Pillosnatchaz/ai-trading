@@ -36,7 +36,9 @@ def main_loop(port=5567):
     # Variabel untuk melacak candle & trade & calendar state
     last_candle_id = None 
     active_trade_ids = set()
-    MAX_CONCURRENT_TRADES = 3
+    # ponytail: live-test on the cent account — one position at a time so a bad
+    # streak can only compound sequentially, never in parallel.
+    MAX_CONCURRENT_TRADES = 1
     last_trade_time = 0.0
     last_calendar_fetch_time = 0.0
     cached_red_events = []
@@ -267,9 +269,16 @@ def main_loop(port=5567):
                     best_dir = "BUY" if prob_buy >= prob_sell else "SELL"
                     
                     # ponytail: Isotonic Calibrated Thresholds
-                    # With a 1:1.5 RR, mathematical breakeven is 40%. 
+                    # With a 1:1.5 RR, mathematical breakeven is 40%.
                     # Isotonic outputs honest probabilities, so we must demand >40% to be profitable.
-                    min_thresh = 0.42
+                    #
+                    # 0.50 measured on the Aug-11 holdout of models 2d167aa9bd/5c0dc07da1:
+                    #   BUY  118 trades @ 50.0% (flat 0.48-0.55, isotonic step)
+                    #   SELL 376 trades @ 54.0%
+                    # 0.45 is WORSE for BUY (45.1%) — the step boundary sits against us there.
+                    # ponytail: PROVISIONAL. Recompute this after the live-data retrain;
+                    # a new calibrator moves the steps and this number stops meaning anything.
+                    min_thresh = 0.50
                     
                     # ponytail: prevent stacking duplicate trades — max 3 active trades, 3-min (180s) cooldown
                     time_since_trade = time.time() - last_trade_time
@@ -299,23 +308,29 @@ def main_loop(port=5567):
                         atr_sl_pips = round((atr * atr_sl_mult) * 10)
                         atr_tp_pips = round((atr * atr_tp_mult) * 10)
                         
+                        # ponytail: clamp narrowed 15-90 -> 30-60. Every label was computed
+                        # at exactly 40 SL (run_labeler.py:41), so an SL of 15 or 90 asks the
+                        # model a question it was never trained on. Keeping the range close to
+                        # 40 keeps the probability meaning what it says. Ratio stays 1:1.5.
                         if best_dir == "BUY":
                             swing_low = features.get('swing_low', ask - 4.0)
                             swing_sl_pips = round(abs(ask - (swing_low - 0.20)) * 10)
-                            sl_pips = max(15, min(90, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_buy.get_model_version_hash()
                         else:
                             swing_high = features.get('swing_high', bid + 4.0)
                             swing_sl_pips = round(abs((swing_high + 0.20) - bid) * 10)
-                            sl_pips = max(15, min(90, max(swing_sl_pips, atr_sl_pips)))
+                            sl_pips = max(30, min(60, max(swing_sl_pips, atr_sl_pips)))
                             chosen_hash = ml_model_sell.get_model_version_hash()
-                            
+
                         tp_pips = round(sl_pips * 1.5)
-                        
-                        # Dynamic Position Sizing ($10 fixed dollar risk target)
-                        target_risk_usd = 10.0
-                        calculated_lot = round(target_risk_usd / (sl_pips * 10.0), 2)
-                        dynamic_lot = max(0.01, min(0.10, calculated_lot))
+
+                        # ponytail: fixed minimum lot for the cent live test. On a cent account
+                        # 0.01 lot = 0.01 oz = $0.001/pip, so a 40-pip stop risks ~$0.04.
+                        # The old $10-risk sizing formula is meaningless at this account size —
+                        # we are buying execution data, not position sizing. Restore equity-based
+                        # sizing (PRD Phase 2) when the balance justifies it.
+                        dynamic_lot = 0.01
                         
                         order_msg = {
                             "action": best_dir,

@@ -34,6 +34,16 @@ def init_historical_table():
     """)
     # Add index for fast triple barrier labeling later
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_ts ON historical_snapshots(timestamp)")
+
+    # ponytail: a rebuild REPLACES the replay, it does not extend it. Without this,
+    # re-running against a new dump appends a second overlapping copy of the same
+    # date range and the model trains on duplicated, interleaved bars.
+    old = conn.execute("SELECT COUNT(*) FROM historical_snapshots").fetchone()[0]
+    if old:
+        print(f"[!] Clearing {old:,} existing rows from historical_snapshots (full rebuild).")
+        conn.execute("DELETE FROM historical_snapshots")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name='historical_snapshots'")
+        conn.commit()
     conn.close()
 
 def _prev_bucket(close, freq, index):

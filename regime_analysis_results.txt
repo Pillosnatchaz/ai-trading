@@ -1,0 +1,45 @@
+=== OVERALL PERFORMANCE BY MARKET REGIME ===
+| market_regime                 |   hours |   total_trades |   total_profit |   avg_profit_per_hour |   win_rate |
+|:------------------------------|--------:|---------------:|---------------:|----------------------:|-----------:|
+| High Volatility & Downtrend   |      26 |            139 |         220.71 |              8.48885  |   0.4579   |
+| High Volatility & Uptrend     |      12 |             53 |         122.27 |             10.1892   |   0.488889 |
+| Low Volatility & Downtrend    |      11 |             50 |          31.41 |              2.85545  |   0.407965 |
+| Medium Volatility & Uptrend   |      11 |             34 |           8.25 |              0.75     |   0.407792 |
+| Medium Volatility & Downtrend |       9 |             42 |           5.08 |              0.564444 |   0.469468 |
+| Low Volatility & Uptrend      |       4 |             17 |           1.57 |              0.3925   |   0.6625   |
+| High Volatility & Ranging     |       3 |              8 |         -12.1  |             -4.03333  |   0.166667 |
+| Low Volatility & Ranging      |      25 |            215 |        -109.46 |             -4.3784   |   0.346564 |
+| Medium Volatility & Ranging   |      19 |             94 |        -253.96 |            -13.3663   |   0.232675 |
+
+=== OVERALL PERFORMANCE BY VOLATILITY LEVEL ===
+| volatility_regime   |   hours |   total_trades |   total_profit |   avg_profit_per_hour |   win_rate |
+|:--------------------|--------:|---------------:|---------------:|----------------------:|-----------:|
+| High Volatility     |      41 |            200 |         330.88 |               8.07024 |   0.44566  |
+| Low Volatility      |      40 |            282 |         -76.48 |              -1.912   |   0.395043 |
+| Medium Volatility   |      39 |            170 |        -240.63 |              -6.17    |   0.336712 |
+
+=== OVERALL PERFORMANCE BY TREND TYPE ===
+| trend_regime   |   hours |   total_trades |   total_profit |   avg_profit_per_hour |   win_rate |
+|:---------------|--------:|---------------:|---------------:|----------------------:|-----------:|
+| Downtrend      |      46 |            231 |         257.2  |               5.5913  |   0.448223 |
+| Uptrend        |      27 |            104 |         132.09 |               4.89222 |   0.48157  |
+| Ranging        |      47 |            317 |        -375.52 |              -7.98979 |   0.289041 |
+
+=== TOP 5 MOST PROFITABLE HOURS ===
+|     | hour_start          |   total_profit | market_regime               |   trend_pct |   high_low_range_pct |   win_rate |
+|----:|:--------------------|---------------:|:----------------------------|------------:|---------------------:|-----------:|
+| 108 | 2026-08-10 16:00:00 |          82.47 | High Volatility & Downtrend |  -0.325934  |             0.54511  |   0.7      |
+| 112 | 2026-08-10 21:00:00 |          68.06 | High Volatility & Uptrend   |   0.439211  |             0.522944 |   0.833333 |
+|  69 | 2026-07-30 13:00:00 |          60.98 | High Volatility & Uptrend   |   0.36325   |             0.495452 |   0.8      |
+| 113 | 2026-08-11 05:00:00 |          52.96 | High Volatility & Downtrend |  -0.42623   |             0.619144 |   0.666667 |
+|  30 | 2026-07-23 12:00:00 |          51.42 | Medium Volatility & Ranging |  -0.0859925 |             0.269792 |   0.833333 |
+
+=== TOP 5 LEAST PROFITABLE HOURS ===
+|     | hour_start          |   total_profit | market_regime               |   trend_pct |   high_low_range_pct |   win_rate |
+|----:|:--------------------|---------------:|:----------------------------|------------:|---------------------:|-----------:|
+| 111 | 2026-08-10 20:00:00 |         -80.87 | Medium Volatility & Ranging |   0.0688531 |             0.319884 |   0        |
+|  68 | 2026-07-30 12:00:00 |         -66.83 | Medium Volatility & Ranging |   0.0472741 |             0.313275 |   0        |
+| 119 | 2026-08-11 11:00:00 |         -54.59 | Low Volatility & Uptrend    |   0.152347  |             0.225844 |   0.25     |
+|  40 | 2026-07-27 08:00:00 |         -54.24 | Low Volatility & Ranging    |   0.0694331 |             0.25512  |   0.235294 |
+|  36 | 2026-07-24 12:00:00 |         -52.98 | Low Volatility & Ranging    |   0.0552064 |             0.226826 |   0.214286 |
+
